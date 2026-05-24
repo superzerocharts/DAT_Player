@@ -1,0 +1,55 @@
+# Build and package output
+build/
+dist/
+out/
+bin/
+obj/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+_deps/
+
+# Visual Studio and editor state
+.vs/
+.vscode/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+
+# Native binaries and intermediates
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+*.exp
+*.idb
+*.ipdb
+*.iobj
+*.res
+*.manifest
+
+# Media and sidecar files
+*.dat
+*.sef
+*.sef2
+*.mp4
+*.mkv
+*.avi
+
+# Logs, caches, and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini
+__pycache__/
+*.py[cod]
