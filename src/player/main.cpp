@@ -141,6 +141,8 @@ struct PlayerState {
     std::uint64_t current_frame = 0;
     bool timeline_dragging = false;
     bool resume_after_timeline_drag = false;
+    bool pending_seek_resume_after_completion = false;
+    std::uint64_t pending_seek_resume_generation = 0;
     bool has_timeline_preview = false;
     std::uint64_t timeline_preview_frame = 0;
     bool has_pending_seek = false;
@@ -380,7 +382,10 @@ void set_status(const std::wstring& text) {
 
 void update_play_button() {
     if (g_state.play_button) {
-        SetWindowTextW(g_state.play_button, g_state.playing ? L"Pause" : L"Play");
+        const bool pause_would_cancel_scrub_resume =
+            (g_state.timeline_dragging && g_state.resume_after_timeline_drag) ||
+            (g_state.seeking && g_state.pending_seek_resume_after_completion);
+        SetWindowTextW(g_state.play_button, (g_state.playing || pause_would_cancel_scrub_resume) ? L"Pause" : L"Play");
     }
 }
 
@@ -397,6 +402,9 @@ void stop_playback() {
         update_play_button();
     }
     g_state.seeking = false;
+    g_state.pending_seek_resume_after_completion = false;
+    g_state.pending_seek_resume_generation = 0;
+    update_play_button();
 }
 
 void stop_preview(bool join_worker = true) {
@@ -799,6 +807,8 @@ void reset_loaded_state() {
     g_state.current_frame = 0;
     g_state.timeline_dragging = false;
     g_state.resume_after_timeline_drag = false;
+    g_state.pending_seek_resume_after_completion = false;
+    g_state.pending_seek_resume_generation = 0;
     g_state.has_timeline_preview = false;
     g_state.timeline_preview_frame = 0;
     g_state.has_pending_seek = false;
@@ -882,6 +892,8 @@ bool load_dat_path(HWND owner, const std::filesystem::path& path, bool dropped_f
         g_state.current_frame = 0;
         g_state.timeline_dragging = false;
         g_state.resume_after_timeline_drag = false;
+        g_state.pending_seek_resume_after_completion = false;
+        g_state.pending_seek_resume_generation = 0;
         g_state.has_timeline_preview = false;
         g_state.timeline_preview_frame = 0;
         g_state.has_pending_seek = false;
@@ -1089,13 +1101,15 @@ std::wstring format_seek_diagnostics(
     std::uint64_t requested_frame,
     std::uint64_t keyframe_frame,
     std::uint64_t frames_decoded,
-    const std::wstring& result_text = L"") {
+    const std::wstring& result_text = L"",
+    bool resume_after_seek = false) {
     std::wostringstream text;
     text << L"Scrub seek\r\n"
          << L"State: " << state << L"\r\n"
          << L"Requested: " << frame_time_label(requested_frame) << L"\r\n"
          << L"Keyframe used: " << (keyframe_frame + 1) << L"\r\n"
          << L"Frames decoded during seek: " << frames_decoded << L"\r\n"
+         << L"Resume after release: " << (resume_after_seek ? L"yes" : L"no") << L"\r\n"
          << L"Committed current frame: " << (g_state.current_frame + 1) << L" / " << frame_count() << L"\r\n";
     if (!result_text.empty()) {
         text << L"Result: " << result_text;
@@ -1132,8 +1146,10 @@ void start_seek_to_frame(std::uint64_t target_frame, bool resume_after_seek) {
     g_state.timeline_preview_frame = 0;
     g_state.has_pending_seek = true;
     g_state.pending_seek_frame = clamped_target;
+    g_state.pending_seek_resume_after_completion = resume_after_seek;
+    g_state.pending_seek_resume_generation = generation;
     update_play_button();
-    g_state.decode_smoke_text = format_seek_diagnostics(L"seeking", clamped_target, keyframe, 0);
+    g_state.decode_smoke_text = format_seek_diagnostics(L"seeking", clamped_target, keyframe, 0, L"", resume_after_seek);
     update_info();
     const auto seek_status = L"Seeking to " + frame_time_label(clamped_target) + L"...";
     set_status(seek_status);
@@ -1396,6 +1412,37 @@ void start_forward_playback() {
 
 void toggle_playback() {
     if (g_state.index.frames.empty()) {
+        return;
+    }
+
+    if (g_state.timeline_dragging) {
+        if (g_state.resume_after_timeline_drag) {
+            g_state.resume_after_timeline_drag = false;
+            g_state.decode_smoke_text = format_seek_diagnostics(
+                L"dragging, resume canceled",
+                g_state.has_timeline_preview ? g_state.timeline_preview_frame : g_state.current_frame,
+                nearest_previous_keyframe(g_state.has_timeline_preview ? g_state.timeline_preview_frame : g_state.current_frame),
+                0);
+            update_play_button();
+            update_info();
+            set_status(L"Scrub resume canceled; release will keep playback paused.");
+        }
+        return;
+    }
+
+    if (g_state.seeking) {
+        if (g_state.pending_seek_resume_after_completion) {
+            g_state.pending_seek_resume_after_completion = false;
+            g_state.pending_seek_resume_generation = 0;
+            g_state.decode_smoke_text = format_seek_diagnostics(
+                L"seeking, resume canceled",
+                g_state.has_pending_seek ? g_state.pending_seek_frame : g_state.current_frame,
+                nearest_previous_keyframe(g_state.has_pending_seek ? g_state.pending_seek_frame : g_state.current_frame),
+                0);
+            update_play_button();
+            update_info();
+            set_status(L"Seek will complete paused.");
+        }
         return;
     }
 
@@ -1672,6 +1719,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                         stop_playback();
                     }
                     g_state.timeline_dragging = true;
+                    update_play_button();
                 }
                 const int position = timeline_position_from_scroll(wparam);
                 const auto target = frame_from_timeline_position(position);
@@ -1685,7 +1733,9 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                     g_state.resume_after_timeline_drag ? L"dragging, will resume" : L"dragging",
                     target,
                     nearest_previous_keyframe(target),
-                    0);
+                    0,
+                    L"",
+                    g_state.resume_after_timeline_drag);
                 SetWindowTextW(g_state.info_label, build_info_text().c_str());
                 schedule_preview_for_frame(target);
                 set_status(L"Scrubbing preview. Release the timeline to commit seek.");
@@ -1693,17 +1743,23 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             }
 
             if (code == TB_ENDTRACK || code == TB_THUMBPOSITION) {
-                const int position = timeline_position_from_scroll(wparam);
-                const auto target = g_state.has_timeline_preview
-                    ? g_state.timeline_preview_frame
-                    : frame_from_timeline_position(position);
-                const bool resume = g_state.timeline_dragging && g_state.resume_after_timeline_drag;
-                g_state.timeline_dragging = false;
-                g_state.resume_after_timeline_drag = false;
-                g_state.has_timeline_preview = false;
-                stop_preview(false);
-                start_seek_to_frame(target, resume);
-                return 0;
+                if (!g_state.timeline_dragging) {
+                    if (code == TB_ENDTRACK || (g_state.seeking && g_state.has_pending_seek)) {
+                        return 0;
+                    }
+                } else {
+                    const int position = timeline_position_from_scroll(wparam);
+                    const auto target = g_state.has_timeline_preview
+                        ? g_state.timeline_preview_frame
+                        : frame_from_timeline_position(position);
+                    const bool resume = g_state.resume_after_timeline_drag;
+                    g_state.timeline_dragging = false;
+                    g_state.resume_after_timeline_drag = false;
+                    g_state.has_timeline_preview = false;
+                    stop_preview(false);
+                    start_seek_to_frame(target, resume);
+                    return 0;
+                }
             }
 
             if (g_state.playing || g_state.seeking) {
@@ -1868,17 +1924,25 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             g_state.has_pending_seek = false;
             g_state.pending_seek_frame = 0;
         }
-        update_play_button();
         const bool seek_ok = seek_message->decoded_any_frame && !g_state.stop_playback_requested;
+        const bool resume_after_seek =
+            seek_ok &&
+            seek_message->resume_after_seek &&
+            g_state.pending_seek_resume_after_completion &&
+            g_state.pending_seek_resume_generation == seek_message->generation;
+        g_state.pending_seek_resume_after_completion = false;
+        g_state.pending_seek_resume_generation = 0;
+        update_play_button();
         g_state.decode_smoke_text = format_seek_diagnostics(
             seek_ok ? L"completed" : L"failed",
             seek_message->requested_frame,
             seek_message->keyframe_frame,
             seek_message->frames_decoded,
-            seek_message->text);
+            seek_message->text,
+            resume_after_seek);
         update_info();
 
-        if (seek_ok && seek_message->resume_after_seek) {
+        if (resume_after_seek) {
             set_status(L"Seek completed; resuming playback.");
             start_forward_playback();
         } else {
