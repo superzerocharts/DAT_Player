@@ -1,5 +1,6 @@
 #include "dat_player/DatFrameIndexer.h"
 #include "playback/H264Decoder.h"
+#include "player/resource.h"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -14,6 +15,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cwctype>
+#include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <memory>
@@ -85,6 +87,7 @@ struct PlayerState {
     HFONT ui_font = nullptr;
     HBRUSH window_background_brush = nullptr;
     ULONG_PTR gdiplus_token = 0;
+    std::unique_ptr<Gdiplus::Bitmap> brand_logo;
     dat_player::DatFrameIndex index;
     std::filesystem::path loaded_path;
     std::wstring decode_smoke_text;
@@ -287,6 +290,51 @@ void update_timeline() {
     }
 }
 
+std::unique_ptr<Gdiplus::Bitmap> load_png_resource(HINSTANCE instance, int resource_id) {
+    HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(resource_id), RT_RCDATA);
+    if (!resource) {
+        return nullptr;
+    }
+
+    HGLOBAL resource_handle = LoadResource(instance, resource);
+    if (!resource_handle) {
+        return nullptr;
+    }
+
+    const DWORD resource_size = SizeofResource(instance, resource);
+    const void* resource_data = LockResource(resource_handle);
+    if (!resource_data || resource_size == 0) {
+        return nullptr;
+    }
+
+    HGLOBAL copy_handle = GlobalAlloc(GMEM_MOVEABLE, resource_size);
+    if (!copy_handle) {
+        return nullptr;
+    }
+
+    void* copy_data = GlobalLock(copy_handle);
+    if (!copy_data) {
+        GlobalFree(copy_handle);
+        return nullptr;
+    }
+
+    std::memcpy(copy_data, resource_data, resource_size);
+    GlobalUnlock(copy_handle);
+
+    IStream* stream = nullptr;
+    if (CreateStreamOnHGlobal(copy_handle, TRUE, &stream) != S_OK || !stream) {
+        GlobalFree(copy_handle);
+        return nullptr;
+    }
+
+    std::unique_ptr<Gdiplus::Bitmap> bitmap(Gdiplus::Bitmap::FromStream(stream));
+    stream->Release();
+    if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok) {
+        return nullptr;
+    }
+    return bitmap;
+}
+
 RECT fitted_rect(const RECT& bounds, std::uint32_t source_width, std::uint32_t source_height) {
     RECT result = bounds;
     const int bounds_width = std::max<int>(1, static_cast<int>(bounds.right - bounds.left));
@@ -359,7 +407,7 @@ void fill_rounded_play_shape(
     graphics.FillPath(&brush, &path);
 }
 
-void draw_player_logo(Gdiplus::Graphics& graphics, const Gdiplus::RectF& bounds) {
+void draw_fallback_player_logo(Gdiplus::Graphics& graphics, const Gdiplus::RectF& bounds) {
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
 
@@ -394,6 +442,17 @@ void draw_player_logo(Gdiplus::Graphics& graphics, const Gdiplus::RectF& bounds)
     graphics.DrawString(L"DAT", -1, &logo_font, map_rect(50, 72, 116, 58), &text_format, &text_brush);
 }
 
+void draw_player_logo(Gdiplus::Graphics& graphics, const Gdiplus::RectF& bounds) {
+    if (g_state.brand_logo) {
+        graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        graphics.DrawImage(g_state.brand_logo.get(), bounds);
+        return;
+    }
+
+    draw_fallback_player_logo(graphics, bounds);
+}
+
 LRESULT CALLBACK brand_header_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
     case WM_PAINT: {
@@ -407,7 +466,7 @@ LRESULT CALLBACK brand_header_proc(HWND hwnd, UINT message, WPARAM wparam, LPARA
         Gdiplus::SolidBrush background(Gdiplus::Color(255, 255, 255, 255));
         graphics.FillRectangle(&background, 0, 0, rect.right - rect.left, rect.bottom - rect.top);
 
-        draw_player_logo(graphics, Gdiplus::RectF(14.0f, 8.0f, 118.0f, 78.0f));
+        draw_player_logo(graphics, Gdiplus::RectF(12.0f, 6.0f, 124.0f, 82.0f));
 
         Gdiplus::FontFamily font_family(L"Segoe UI");
         Gdiplus::Font title_font(&font_family, 22.0f, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
@@ -1253,8 +1312,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     window_class.lpfnWndProc = window_proc;
     window_class.hInstance = instance;
     window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    window_class.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    window_class.hIconSm = LoadIconW(nullptr, IDI_APPLICATION);
+    window_class.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_DATPLAYER_ICON));
+    window_class.hIconSm = static_cast<HICON>(LoadImageW(
+        instance,
+        MAKEINTRESOURCEW(IDI_DATPLAYER_ICON),
+        IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON),
+        GetSystemMetrics(SM_CYSMICON),
+        LR_DEFAULTCOLOR));
     window_class.hbrBackground = g_state.window_background_brush;
     window_class.lpszClassName = class_name;
 
@@ -1291,6 +1356,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
         return 1;
     }
+
+    g_state.brand_logo = load_png_resource(instance, IDR_DATPLAYER_LOGO);
 
     HWND hwnd = CreateWindowExW(
         0,

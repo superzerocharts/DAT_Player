@@ -67,7 +67,8 @@ if(WIN32)
     dat_player_set_warnings(dat_playback)
 
     add_executable(dat_player WIN32
-        src/player/main.cpp)
+        src/player/main.cpp
+        src/player/DatPlayer.rc)
 
     set_target_properties(dat_player
         PROPERTIES
