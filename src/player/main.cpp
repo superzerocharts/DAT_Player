@@ -31,15 +31,16 @@ constexpr int kOpenButtonId = 1001;
 constexpr int kPlayButtonId = 1002;
 constexpr int kDecodeSmokeButtonId = 1003;
 constexpr int kRenderFirstFrameButtonId = 1004;
-constexpr int kTimelineId = 1005;
-constexpr int kInfoLabelId = 1006;
-constexpr int kStatusLabelId = 1007;
-constexpr int kBrandHeaderId = 1008;
-constexpr int kFilePathId = 1009;
-constexpr int kFileLabelId = 1010;
-constexpr int kDetailsGroupId = 1011;
-constexpr int kCurrentTimeLabelId = 1012;
-constexpr int kTotalTimeLabelId = 1013;
+constexpr int kActualSizeButtonId = 1005;
+constexpr int kTimelineId = 1006;
+constexpr int kInfoLabelId = 1007;
+constexpr int kStatusLabelId = 1008;
+constexpr int kBrandHeaderId = 1009;
+constexpr int kFilePathId = 1010;
+constexpr int kFileLabelId = 1011;
+constexpr int kDetailsGroupId = 1012;
+constexpr int kCurrentTimeLabelId = 1013;
+constexpr int kTotalTimeLabelId = 1014;
 constexpr UINT kPlaybackFrameMessage = WM_APP + 1;
 constexpr UINT kPlaybackFinishedMessage = WM_APP + 2;
 constexpr UINT kSeekFinishedMessage = WM_APP + 3;
@@ -91,6 +92,7 @@ struct PlayerState {
     HWND hwnd = nullptr;
     HWND open_button = nullptr;
     HWND play_button = nullptr;
+    HWND actual_size_button = nullptr;
     HWND decode_smoke_button = nullptr;
     HWND render_first_frame_button = nullptr;
     HWND timeline = nullptr;
@@ -143,6 +145,8 @@ struct PlayerState {
 };
 
 PlayerState g_state;
+
+void start_forward_playback();
 
 std::wstring widen(const std::string& value) {
     if (value.empty()) {
@@ -700,6 +704,7 @@ void update_info() {
 
 void set_enabled_after_load(bool enabled) {
     EnableWindow(g_state.play_button, enabled);
+    EnableWindow(g_state.actual_size_button, enabled);
     EnableWindow(g_state.decode_smoke_button, enabled);
     EnableWindow(g_state.render_first_frame_button, enabled);
     EnableWindow(g_state.timeline, enabled);
@@ -813,7 +818,8 @@ void load_dat_file(HWND owner) {
         if (g_state.index.frames.empty()) {
             set_status(L"No valid H264/I264 frame records were found.");
         } else {
-            set_status(L"Loaded index. Simple forward playback and diagnostics are available.");
+            set_status(L"Loaded index. Starting playback...");
+            start_forward_playback();
         }
     } catch (const std::exception& ex) {
         reset_loaded_state();
@@ -1255,6 +1261,74 @@ void toggle_playback() {
     }
 }
 
+void resize_to_actual_size() {
+    if (!g_state.hwnd || g_state.index.frames.empty()) {
+        return;
+    }
+
+    const auto& first_frame = g_state.index.frames.front();
+    const int source_width = static_cast<int>(first_frame.width);
+    const int source_height = static_cast<int>(first_frame.height);
+    if (source_width <= 0 || source_height <= 0) {
+        set_status(L"Actual Size is unavailable because no source resolution was detected.");
+        return;
+    }
+
+    const int padding = 14;
+    const int header_height = 64;
+    const int file_row_height = 30;
+    const int button_height = 32;
+    const int timeline_height = 28;
+    const int status_height = 24;
+    const int file_top = header_height + 12;
+    const int content_top = file_top + file_row_height + 14;
+    const int content_bottom_margin = status_height + 16;
+    const int controls_height = button_height + 8;
+
+    int details_width = 370;
+    int client_width = 0;
+    for (int i = 0; i < 4; ++i) {
+        client_width = source_width + padding * 3 + details_width;
+        details_width = std::clamp(client_width / 3, 320, 370);
+    }
+    client_width = source_width + padding * 3 + details_width;
+    const int client_height = content_top + source_height + timeline_height + controls_height + 16 + content_bottom_margin;
+
+    RECT window_rect = {0, 0, client_width, client_height};
+    const auto style = static_cast<DWORD>(GetWindowLongPtrW(g_state.hwnd, GWL_STYLE));
+    const auto ex_style = static_cast<DWORD>(GetWindowLongPtrW(g_state.hwnd, GWL_EXSTYLE));
+    AdjustWindowRectEx(&window_rect, style, FALSE, ex_style);
+    int desired_width = window_rect.right - window_rect.left;
+    int desired_height = window_rect.bottom - window_rect.top;
+
+    HMONITOR monitor = MonitorFromWindow(g_state.hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitor_info = {};
+    monitor_info.cbSize = sizeof(monitor_info);
+    GetMonitorInfoW(monitor, &monitor_info);
+    const RECT work = monitor_info.rcWork;
+    const int work_width = work.right - work.left;
+    const int work_height = work.bottom - work.top;
+
+    const bool clamped = desired_width > work_width || desired_height > work_height;
+    desired_width = std::min(desired_width, work_width);
+    desired_height = std::min(desired_height, work_height);
+    const int x = work.left + std::max(0, (work_width - desired_width) / 2);
+    const int y = work.top + std::max(0, (work_height - desired_height) / 2);
+
+    if (IsZoomed(g_state.hwnd)) {
+        ShowWindow(g_state.hwnd, SW_RESTORE);
+    }
+    SetWindowPos(g_state.hwnd, nullptr, x, y, desired_width, desired_height, SWP_NOZORDER | SWP_NOACTIVATE);
+
+    if (clamped) {
+        set_status(L"Screen is too small for full video size; window was fit to available space.");
+    } else {
+        std::wostringstream status;
+        status << L"Actual Size applied: video panel target " << source_width << L" x " << source_height << L".";
+        set_status(status.str());
+    }
+}
+
 void apply_default_font(HWND control) {
     if (control) {
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(g_state.ui_font), TRUE);
@@ -1271,6 +1345,7 @@ void layout_controls(HWND hwnd) {
     const int file_label_width = 64;
     const int open_button_width = 110;
     const int play_button_width = 104;
+    const int actual_size_button_width = 112;
     const int smoke_button_width = 132;
     const int render_button_width = 132;
     const int button_height = 32;
@@ -1304,6 +1379,7 @@ void layout_controls(HWND hwnd) {
     MoveWindow(g_state.timeline, padding + time_label_width + 6, timeline_top, video_width - time_label_width * 2 - 12, timeline_height, TRUE);
     MoveWindow(g_state.total_time_label, padding + video_width - time_label_width, timeline_top + 4, time_label_width, 20, TRUE);
     MoveWindow(g_state.play_button, padding, controls_top, play_button_width, button_height, TRUE);
+    MoveWindow(g_state.actual_size_button, padding + play_button_width + 8, controls_top, actual_size_button_width, button_height, TRUE);
     MoveWindow(g_state.details_group, details_left, content_top, details_width, content_height, TRUE);
     MoveWindow(g_state.info_label, details_inner_left, details_inner_top, details_inner_width, details_text_height, TRUE);
     MoveWindow(g_state.decode_smoke_button, details_inner_left, details_buttons_top, smoke_button_width, button_height, TRUE);
@@ -1342,6 +1418,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpenButtonId)), nullptr, nullptr);
         g_state.play_button = CreateWindowW(L"BUTTON", L"Play", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPlayButtonId)), nullptr, nullptr);
+        g_state.actual_size_button = CreateWindowW(L"BUTTON", L"Actual Size", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
+            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kActualSizeButtonId)), nullptr, nullptr);
         g_state.details_group = CreateWindowW(L"BUTTON", L"Details / Diagnostics", WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDetailsGroupId)), nullptr, nullptr);
         g_state.decode_smoke_button = CreateWindowW(L"BUTTON", L"Decode Test", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
@@ -1366,6 +1444,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         apply_default_font(g_state.file_path_edit);
         apply_default_font(g_state.open_button);
         apply_default_font(g_state.play_button);
+        apply_default_font(g_state.actual_size_button);
         apply_default_font(g_state.details_group);
         apply_default_font(g_state.decode_smoke_button);
         apply_default_font(g_state.render_first_frame_button);
@@ -1414,6 +1493,9 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             return 0;
         case kPlayButtonId:
             toggle_playback();
+            return 0;
+        case kActualSizeButtonId:
+            resize_to_actual_size();
             return 0;
         case kDecodeSmokeButtonId:
             run_decode_smoke_test();
