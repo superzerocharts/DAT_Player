@@ -527,28 +527,29 @@ LRESULT CALLBACK video_panel_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM
         const auto& frame = g_state.rendered_frame;
         if (!frame.pixels.empty() && frame.display_width > 0 && frame.display_height > 0) {
             const RECT draw_rect = fitted_rect(rect, frame.display_width, frame.display_height);
-            BITMAPINFO bitmap_info = {};
-            bitmap_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-            bitmap_info.bmiHeader.biWidth = static_cast<LONG>(frame.display_width);
-            bitmap_info.bmiHeader.biHeight = -static_cast<LONG>(frame.display_height);
-            bitmap_info.bmiHeader.biPlanes = 1;
-            bitmap_info.bmiHeader.biBitCount = 32;
-            bitmap_info.bmiHeader.biCompression = BI_RGB;
-
-            StretchDIBits(
-                memory_dc,
-                draw_rect.left,
-                draw_rect.top,
-                draw_rect.right - draw_rect.left,
-                draw_rect.bottom - draw_rect.top,
+            Gdiplus::Graphics graphics(memory_dc);
+            graphics.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+            graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighSpeed);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBilinear);
+            graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+            Gdiplus::Bitmap bitmap(
+                static_cast<INT>(frame.display_width),
+                static_cast<INT>(frame.display_height),
+                static_cast<INT>(frame.stride_bytes),
+                PixelFormat32bppRGB,
+                const_cast<BYTE*>(frame.pixels.data()));
+            graphics.DrawImage(
+                &bitmap,
+                Gdiplus::Rect(
+                    draw_rect.left,
+                    draw_rect.top,
+                    draw_rect.right - draw_rect.left,
+                    draw_rect.bottom - draw_rect.top),
                 0,
                 0,
-                static_cast<int>(frame.display_width),
-                static_cast<int>(frame.display_height),
-                frame.pixels.data(),
-                &bitmap_info,
-                DIB_RGB_COLORS,
-                SRCCOPY);
+                static_cast<INT>(frame.display_width),
+                static_cast<INT>(frame.display_height),
+                Gdiplus::UnitPixel);
         } else {
             SetBkMode(memory_dc, TRANSPARENT);
             SetTextColor(memory_dc, RGB(210, 210, 210));
