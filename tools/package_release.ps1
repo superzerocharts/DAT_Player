@@ -1,7 +1,8 @@
 param(
     [string]$BuildDir = "build",
     [string]$Configuration = "Release",
-    [string]$DistDir = "dist\DatPlayer"
+    [string]$DistDir = "dist\DatPlayer",
+    [switch]$Zip
 )
 
 $ErrorActionPreference = "Stop"
@@ -61,4 +62,14 @@ if ($packagedFiles -contains "dat_decode_smoke_test.exe" -or $packagedFiles -con
 
 if (Get-ChildItem -LiteralPath $fullDistPath -Filter *.dat -File -ErrorAction SilentlyContinue) {
     throw "Sample DAT files should not be included in the release folder."
+}
+
+if ($Zip) {
+    $zipPath = Join-Path (Split-Path -Parent $fullDistPath) "DatPlayer-portable.zip"
+    if (Test-Path -LiteralPath $zipPath) {
+        Remove-Item -LiteralPath $zipPath -Force
+    }
+    Compress-Archive -Path $fullDistPath -DestinationPath $zipPath
+    Write-Host "Portable archive:"
+    Write-Host "  $zipPath"
 }

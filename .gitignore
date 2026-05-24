@@ -27,6 +27,7 @@ _deps/
 *.dll
 *.lib
 *.exp
+*.zip
 *.idb
 *.ipdb
 *.iobj
