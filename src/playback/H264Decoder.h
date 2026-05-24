@@ -51,6 +51,7 @@ struct ForwardPlaybackFrame {
     std::uint64_t timestamp = 0;
     std::uint64_t frames_submitted = 0;
     std::uint64_t frames_decoded = 0;
+    double convert_ms = 0.0;
 };
 
 using ForwardPlaybackCallback = std::function<bool(ForwardPlaybackFrame&& frame)>;

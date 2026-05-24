@@ -619,7 +619,10 @@ bool try_process_output(
         const auto frame_index = output_sink->next_output_frame++;
         if (frame_index >= output_sink->render_from_frame && output_sink->callback) {
             BgraVideoFrame frame;
+            const auto convert_started = std::chrono::steady_clock::now();
             decode_sample_to_bgra(decoded_sample, current_type.get(), *output_sink->index, frame);
+            const auto convert_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - convert_started).count();
             const auto bounded_index = std::min<std::uint64_t>(frame_index, output_sink->index->frames.size() - 1);
             ForwardPlaybackFrame playback_frame;
             playback_frame.frame = std::move(frame);
@@ -627,6 +630,7 @@ bool try_process_output(
             playback_frame.timestamp = output_sink->index->frames[static_cast<std::size_t>(bounded_index)].timestamp;
             playback_frame.frames_submitted = result.frames_submitted;
             playback_frame.frames_decoded = result.frames_decoded;
+            playback_frame.convert_ms = convert_ms;
             if (!output_sink->callback(std::move(playback_frame))) {
                 output_sink->stop_requested = true;
             }

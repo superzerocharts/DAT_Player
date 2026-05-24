@@ -62,6 +62,8 @@ struct UiPlaybackFrame {
     std::uint64_t late_frames = 0;
     double effective_fps = 0.0;
     double frame_interval_ms = 0.0;
+    double convert_ms = 0.0;
+    std::chrono::steady_clock::time_point posted_at{};
     bool seek_frame = false;
 };
 
@@ -126,6 +128,16 @@ struct PlayerState {
     std::uint64_t late_frames = 0;
     double effective_playback_fps = 0.0;
     double frame_interval_ms = 0.0;
+    double recent_frame_interval_ms = 0.0;
+    double max_recent_frame_interval_ms = 0.0;
+    double average_ui_delay_ms = 0.0;
+    double max_ui_delay_ms = 0.0;
+    double average_convert_ms = 0.0;
+    double max_convert_ms = 0.0;
+    double last_paint_ms = 0.0;
+    double average_paint_ms = 0.0;
+    double max_paint_ms = 0.0;
+    std::chrono::steady_clock::time_point last_ui_frame_time{};
     std::uint64_t current_frame = 0;
     bool timeline_dragging = false;
     bool resume_after_timeline_drag = false;
@@ -294,6 +306,14 @@ double media_seconds_from_start(
 
     const double fps = fallback_fps > 0.0 ? fallback_fps : 30.0;
     return static_cast<double>(frame - start_frame) / fps;
+}
+
+double stable_playback_seconds_from_start(std::uint64_t start_frame, std::uint64_t frame, double fps) {
+    const auto clamped_fps = (fps >= 1.0 && fps <= 120.0) ? fps : 30.0;
+    if (frame < start_frame) {
+        return 0.0;
+    }
+    return static_cast<double>(frame - start_frame) / clamped_fps;
 }
 
 int timeline_position_from_frame(std::uint64_t frame) {
@@ -644,6 +664,7 @@ LRESULT CALLBACK video_panel_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM
         return 0;
 
     case WM_PAINT: {
+        const auto paint_started = std::chrono::steady_clock::now();
         PAINTSTRUCT ps = {};
         HDC hdc = BeginPaint(hwnd, &ps);
         RECT rect = {};
@@ -665,7 +686,7 @@ LRESULT CALLBACK video_panel_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM
             Gdiplus::Graphics graphics(memory_dc);
             graphics.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
             graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighSpeed);
-            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBilinear);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeBilinear);
             graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
             Gdiplus::Bitmap bitmap(
                 static_cast<INT>(frame.display_width),
@@ -692,6 +713,13 @@ LRESULT CALLBACK video_panel_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM
         }
 
         BitBlt(hdc, 0, 0, width, height, memory_dc, 0, 0, SRCCOPY);
+        const auto paint_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - paint_started).count();
+        g_state.last_paint_ms = paint_ms;
+        g_state.average_paint_ms = g_state.average_paint_ms <= 0.0
+            ? paint_ms
+            : (g_state.average_paint_ms * 0.9 + paint_ms * 0.1);
+        g_state.max_paint_ms = std::max(g_state.max_paint_ms, paint_ms);
         SelectObject(memory_dc, old_bitmap);
         DeleteObject(memory_bitmap);
         DeleteDC(memory_dc);
@@ -758,6 +786,16 @@ void reset_loaded_state() {
     g_state.late_frames = 0;
     g_state.effective_playback_fps = 0.0;
     g_state.frame_interval_ms = 0.0;
+    g_state.recent_frame_interval_ms = 0.0;
+    g_state.max_recent_frame_interval_ms = 0.0;
+    g_state.average_ui_delay_ms = 0.0;
+    g_state.max_ui_delay_ms = 0.0;
+    g_state.average_convert_ms = 0.0;
+    g_state.max_convert_ms = 0.0;
+    g_state.last_paint_ms = 0.0;
+    g_state.average_paint_ms = 0.0;
+    g_state.max_paint_ms = 0.0;
+    g_state.last_ui_frame_time = {};
     g_state.current_frame = 0;
     g_state.timeline_dragging = false;
     g_state.resume_after_timeline_drag = false;
@@ -831,6 +869,16 @@ bool load_dat_path(HWND owner, const std::filesystem::path& path, bool dropped_f
         g_state.late_frames = 0;
         g_state.effective_playback_fps = 0.0;
         g_state.frame_interval_ms = 0.0;
+        g_state.recent_frame_interval_ms = 0.0;
+        g_state.max_recent_frame_interval_ms = 0.0;
+        g_state.average_ui_delay_ms = 0.0;
+        g_state.max_ui_delay_ms = 0.0;
+        g_state.average_convert_ms = 0.0;
+        g_state.max_convert_ms = 0.0;
+        g_state.last_paint_ms = 0.0;
+        g_state.average_paint_ms = 0.0;
+        g_state.max_paint_ms = 0.0;
+        g_state.last_ui_frame_time = {};
         g_state.current_frame = 0;
         g_state.timeline_dragging = false;
         g_state.resume_after_timeline_drag = false;
@@ -1015,15 +1063,24 @@ std::wstring format_playback_diagnostics(const std::wstring& state) {
          << L"Frames decoded: " << g_state.frames_decoded << L"\r\n"
          << L"Frames rendered: " << g_state.frames_rendered << L"\r\n"
          << L"Late frames: " << g_state.late_frames << L"\r\n"
-         << L"Effective playback FPS: " << format_double(g_state.effective_playback_fps, 2) << L"\r\n"
-         << L"Frame interval: " << format_double(g_state.frame_interval_ms, 2) << L" ms\r\n";
+         << L"Target FPS: " << format_double(playback_fps(), 2) << L"\r\n"
+         << L"Actual FPS: " << format_double(g_state.effective_playback_fps, 2) << L"\r\n"
+         << L"Worker interval: " << format_double(g_state.frame_interval_ms, 2) << L" ms\r\n"
+         << L"UI interval avg/max: " << format_double(g_state.recent_frame_interval_ms, 2)
+         << L" / " << format_double(g_state.max_recent_frame_interval_ms, 2) << L" ms\r\n"
+         << L"UI post delay avg/max: " << format_double(g_state.average_ui_delay_ms, 2)
+         << L" / " << format_double(g_state.max_ui_delay_ms, 2) << L" ms\r\n"
+         << L"NV12->BGRA avg/max: " << format_double(g_state.average_convert_ms, 2)
+         << L" / " << format_double(g_state.max_convert_ms, 2) << L" ms\r\n"
+         << L"Paint avg/max: " << format_double(g_state.average_paint_ms, 2)
+         << L" / " << format_double(g_state.max_paint_ms, 2) << L" ms\r\n";
     if (!g_state.index.frames.empty() && g_state.current_frame < frame_count()) {
         const auto timestamp = g_state.index.frames[static_cast<std::size_t>(g_state.current_frame)].timestamp;
         const double seconds = static_cast<double>(timestamp - g_state.index.frames.front().timestamp) / 39062.5;
         text << L"Current timestamp: " << timestamp << L"\r\n"
              << L"Approx time: " << format_double(seconds, 2) << L" sec\r\n";
     }
-    text << L"Timing: timestamp deltas, fallback " << format_double(playback_fps(), 2) << L" FPS";
+    text << L"Timing: stable cadence from estimated FPS; DAT timestamps used for time display";
     return text.str();
 }
 
@@ -1230,6 +1287,16 @@ void start_forward_playback() {
     g_state.late_frames = 0;
     g_state.effective_playback_fps = 0.0;
     g_state.frame_interval_ms = 1000.0 / playback_fps();
+    g_state.recent_frame_interval_ms = 0.0;
+    g_state.max_recent_frame_interval_ms = 0.0;
+    g_state.average_ui_delay_ms = 0.0;
+    g_state.max_ui_delay_ms = 0.0;
+    g_state.average_convert_ms = 0.0;
+    g_state.max_convert_ms = 0.0;
+    g_state.last_paint_ms = 0.0;
+    g_state.average_paint_ms = 0.0;
+    g_state.max_paint_ms = 0.0;
+    g_state.last_ui_frame_time = {};
     g_state.stop_playback_requested = false;
     const std::uint64_t generation = ++g_state.playback_generation;
     g_state.playing = true;
@@ -1262,7 +1329,7 @@ void start_forward_playback() {
                 return false;
             }
 
-            const double media_seconds = media_seconds_from_start(index, start_frame, frame.frame_index, fallback_fps);
+            const double media_seconds = stable_playback_seconds_from_start(start_frame, frame.frame_index, fallback_fps);
             const auto media_offset = std::chrono::microseconds(
                 static_cast<long long>(std::max(0.0, media_seconds) * 1000000.0));
             if (!clock_started) {
@@ -1285,6 +1352,9 @@ void start_forward_playback() {
             if (now > due_time + std::chrono::milliseconds(20)) {
                 ++late_frames;
             }
+            if (now > due_time + std::chrono::milliseconds(80)) {
+                playback_started = now - media_offset;
+            }
             ++rendered_callbacks;
             const double elapsed_seconds = std::chrono::duration<double>(now - playback_started).count();
             const double effective_fps = elapsed_seconds > 0.0
@@ -1305,6 +1375,8 @@ void start_forward_playback() {
             ui_frame->late_frames = late_frames;
             ui_frame->effective_fps = effective_fps;
             ui_frame->frame_interval_ms = frame_interval_ms;
+            ui_frame->convert_ms = frame.convert_ms;
+            ui_frame->posted_at = std::chrono::steady_clock::now();
             if (!PostMessageW(hwnd, kPlaybackFrameMessage, 0, reinterpret_cast<LPARAM>(ui_frame.release()))) {
                 return false;
             }
@@ -1660,6 +1732,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
     case kPlaybackFrameMessage: {
         std::unique_ptr<UiPlaybackFrame> frame(reinterpret_cast<UiPlaybackFrame*>(lparam));
         if (frame && frame->generation == g_state.playback_generation.load()) {
+            const auto handled_at = std::chrono::steady_clock::now();
             g_state.rendered_frame = std::move(frame->frame);
             g_state.current_frame = frame->frame_index;
             g_state.frames_decoded = frame->frames_decoded;
@@ -1671,6 +1744,29 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 g_state.late_frames = frame->late_frames;
                 g_state.effective_playback_fps = frame->effective_fps;
                 g_state.frame_interval_ms = frame->frame_interval_ms;
+                if (g_state.last_ui_frame_time.time_since_epoch().count() != 0) {
+                    const double ui_interval_ms = std::chrono::duration<double, std::milli>(
+                        handled_at - g_state.last_ui_frame_time).count();
+                    g_state.recent_frame_interval_ms = g_state.recent_frame_interval_ms <= 0.0
+                        ? ui_interval_ms
+                        : (g_state.recent_frame_interval_ms * 0.9 + ui_interval_ms * 0.1);
+                    g_state.max_recent_frame_interval_ms = std::max(g_state.max_recent_frame_interval_ms, ui_interval_ms);
+                }
+                g_state.last_ui_frame_time = handled_at;
+                if (frame->posted_at.time_since_epoch().count() != 0) {
+                    const double ui_delay_ms = std::chrono::duration<double, std::milli>(
+                        handled_at - frame->posted_at).count();
+                    g_state.average_ui_delay_ms = g_state.average_ui_delay_ms <= 0.0
+                        ? ui_delay_ms
+                        : (g_state.average_ui_delay_ms * 0.9 + ui_delay_ms * 0.1);
+                    g_state.max_ui_delay_ms = std::max(g_state.max_ui_delay_ms, ui_delay_ms);
+                }
+                if (frame->convert_ms > 0.0) {
+                    g_state.average_convert_ms = g_state.average_convert_ms <= 0.0
+                        ? frame->convert_ms
+                        : (g_state.average_convert_ms * 0.9 + frame->convert_ms * 0.1);
+                    g_state.max_convert_ms = std::max(g_state.max_convert_ms, frame->convert_ms);
+                }
                 g_state.decode_smoke_text = format_playback_diagnostics(L"playing");
             }
             if (g_state.video_panel) {
