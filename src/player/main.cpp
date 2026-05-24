@@ -35,10 +35,9 @@ constexpr int kTimelineId = 1005;
 constexpr int kInfoLabelId = 1006;
 constexpr int kStatusLabelId = 1007;
 constexpr int kBrandHeaderId = 1008;
-constexpr int kMenuOpenId = 40001;
-constexpr int kMenuExitId = 40002;
-constexpr int kMenuDecodeSmokeId = 40003;
-constexpr int kMenuRenderFirstFrameId = 40004;
+constexpr int kFilePathId = 1009;
+constexpr int kFileLabelId = 1010;
+constexpr int kDetailsGroupId = 1011;
 constexpr UINT kPlaybackFrameMessage = WM_APP + 1;
 constexpr UINT kPlaybackFinishedMessage = WM_APP + 2;
 constexpr UINT kSeekFinishedMessage = WM_APP + 3;
@@ -81,6 +80,9 @@ struct PlayerState {
     HWND render_first_frame_button = nullptr;
     HWND timeline = nullptr;
     HWND brand_header = nullptr;
+    HWND file_label = nullptr;
+    HWND file_path_edit = nullptr;
+    HWND details_group = nullptr;
     HWND video_panel = nullptr;
     HWND info_label = nullptr;
     HWND status_label = nullptr;
@@ -290,6 +292,16 @@ void update_timeline() {
     }
 }
 
+void update_file_path_text() {
+    if (!g_state.file_path_edit) {
+        return;
+    }
+    const std::wstring text = g_state.loaded_path.empty()
+        ? L"No .dat file selected"
+        : g_state.loaded_path.wstring();
+    SetWindowTextW(g_state.file_path_edit, text.c_str());
+}
+
 std::unique_ptr<Gdiplus::Bitmap> load_png_resource(HINSTANCE instance, int resource_id) {
     HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(resource_id), RT_RCDATA);
     if (!resource) {
@@ -463,25 +475,25 @@ LRESULT CALLBACK brand_header_proc(HWND hwnd, UINT message, WPARAM wparam, LPARA
 
         Gdiplus::Graphics graphics(hdc);
         graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-        Gdiplus::SolidBrush background(Gdiplus::Color(255, 255, 255, 255));
+        Gdiplus::SolidBrush background(Gdiplus::Color(255, 240, 240, 240));
         graphics.FillRectangle(&background, 0, 0, rect.right - rect.left, rect.bottom - rect.top);
 
-        draw_player_logo(graphics, Gdiplus::RectF(12.0f, 6.0f, 124.0f, 82.0f));
+        draw_player_logo(graphics, Gdiplus::RectF(14.0f, 7.0f, 50.0f, 50.0f));
 
         Gdiplus::FontFamily font_family(L"Segoe UI");
         Gdiplus::Font title_font(&font_family, 22.0f, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-        Gdiplus::Font subtitle_font(&font_family, 13.0f, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+        Gdiplus::Font subtitle_font(&font_family, 12.0f, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
         Gdiplus::SolidBrush title_brush(Gdiplus::Color(255, 35, 43, 51));
         Gdiplus::SolidBrush subtitle_brush(Gdiplus::Color(255, 88, 96, 104));
-        graphics.DrawString(L"DAT Player", -1, &title_font, Gdiplus::PointF(144.0f, 18.0f), &title_brush);
+        graphics.DrawString(L"DAT Player", -1, &title_font, Gdiplus::PointF(76.0f, 12.0f), &title_brush);
         graphics.DrawString(
             L"Lightweight companion utility for compatible Mirasys/Spotter DAT files",
             -1,
             &subtitle_font,
-            Gdiplus::PointF(146.0f, 48.0f),
+            Gdiplus::PointF(78.0f, 40.0f),
             &subtitle_brush);
 
-        Gdiplus::Pen divider(Gdiplus::Color(255, 220, 224, 228), 1.0f);
+        Gdiplus::Pen divider(Gdiplus::Color(255, 210, 210, 210), 1.0f);
         graphics.DrawLine(&divider, 0, rect.bottom - 1, rect.right, rect.bottom - 1);
         EndPaint(hwnd, &ps);
         return 0;
@@ -571,6 +583,7 @@ std::wstring build_info_text() {
 void update_info() {
     const auto info = build_info_text();
     SetWindowTextW(g_state.info_label, info.c_str());
+    update_file_path_text();
     update_timeline();
 }
 
@@ -1002,53 +1015,51 @@ void apply_default_font(HWND control) {
     }
 }
 
-void create_main_menu(HWND hwnd) {
-    HMENU menu = CreateMenu();
-    HMENU file_menu = CreatePopupMenu();
-    AppendMenuW(file_menu, MF_STRING, kMenuOpenId, L"&Open .dat...");
-    AppendMenuW(file_menu, MF_STRING, kMenuDecodeSmokeId, L"&Decode Smoke Test");
-    AppendMenuW(file_menu, MF_STRING, kMenuRenderFirstFrameId, L"&Render First Frame");
-    AppendMenuW(file_menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(file_menu, MF_STRING, kMenuExitId, L"E&xit");
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(file_menu), L"&File");
-    SetMenu(hwnd, menu);
-}
-
 void layout_controls(HWND hwnd) {
     RECT rect = {};
     GetClientRect(hwnd, &rect);
     const int width = rect.right - rect.left;
     const int padding = 14;
-    const int header_height = 90;
-    const int button_width = 104;
-    const int smoke_button_width = 156;
-    const int render_button_width = 146;
-    const int button_height = 34;
+    const int header_height = 64;
+    const int file_row_height = 30;
+    const int file_label_width = 64;
+    const int open_button_width = 110;
+    const int play_button_width = 104;
+    const int smoke_button_width = 132;
+    const int render_button_width = 132;
+    const int button_height = 32;
     const int timeline_height = 34;
     const int status_height = 24;
-    const int action_top = header_height + 12;
-    const int timeline_top = action_top + button_height + 10;
-    const int content_top = timeline_top + timeline_height + 12;
-    const int content_bottom = rect.bottom - status_height - 10;
-    const int content_height = std::max(80, content_bottom - content_top);
-    const int info_width = std::max(220, width / 3);
-    const int video_width = std::max(120, width - padding * 3 - info_width);
+    const int file_top = header_height + 12;
+    const int content_top = file_top + file_row_height + 14;
+    const int status_top = rect.bottom - status_height - 6;
+    const int content_bottom = status_top - 10;
+    const int details_width = std::clamp(width / 3, 320, 370);
+    const int video_width = std::max(240, width - padding * 3 - details_width);
+    const int content_height = std::max(220, content_bottom - content_top);
+    const int controls_height = button_height + 8;
+    const int video_height = std::max(120, content_height - timeline_height - controls_height - 18);
+    const int timeline_top = content_top + video_height + 8;
+    const int controls_top = timeline_top + timeline_height + 4;
+    const int details_left = padding + video_width + padding;
+    const int details_inner_left = details_left + 12;
+    const int details_inner_top = content_top + 24;
+    const int details_inner_width = details_width - 24;
+    const int details_buttons_top = content_bottom - button_height - 12;
+    const int details_text_height = std::max(80, details_buttons_top - details_inner_top - 10);
 
     MoveWindow(g_state.brand_header, 0, 0, width, header_height, TRUE);
-    MoveWindow(g_state.open_button, padding, action_top, button_width, button_height, TRUE);
-    MoveWindow(g_state.play_button, padding + button_width + 8, action_top, button_width, button_height, TRUE);
-    MoveWindow(g_state.decode_smoke_button, padding + button_width * 2 + 16, action_top, smoke_button_width, button_height, TRUE);
-    MoveWindow(g_state.render_first_frame_button, padding + button_width * 2 + smoke_button_width + 24, action_top, render_button_width, button_height, TRUE);
-    MoveWindow(g_state.timeline, padding, timeline_top, width - padding * 2, timeline_height, TRUE);
-    MoveWindow(g_state.video_panel, padding, content_top, video_width, content_height, TRUE);
-    MoveWindow(
-        g_state.info_label,
-        padding + video_width + padding,
-        content_top,
-        info_width,
-        content_height,
-        TRUE);
-    MoveWindow(g_state.status_label, padding, rect.bottom - status_height - 6, width - padding * 2, status_height, TRUE);
+    MoveWindow(g_state.file_label, padding, file_top + 5, file_label_width, 22, TRUE);
+    MoveWindow(g_state.file_path_edit, padding + file_label_width, file_top, std::max(80, width - padding * 3 - file_label_width - open_button_width), file_row_height, TRUE);
+    MoveWindow(g_state.open_button, width - padding - open_button_width, file_top - 1, open_button_width, button_height, TRUE);
+    MoveWindow(g_state.video_panel, padding, content_top, video_width, video_height, TRUE);
+    MoveWindow(g_state.timeline, padding, timeline_top, video_width, timeline_height, TRUE);
+    MoveWindow(g_state.play_button, padding, controls_top, play_button_width, button_height, TRUE);
+    MoveWindow(g_state.details_group, details_left, content_top, details_width, content_height, TRUE);
+    MoveWindow(g_state.info_label, details_inner_left, details_inner_top, details_inner_width, details_text_height, TRUE);
+    MoveWindow(g_state.decode_smoke_button, details_inner_left, details_buttons_top, smoke_button_width, button_height, TRUE);
+    MoveWindow(g_state.render_first_frame_button, details_inner_left + smoke_button_width + 8, details_buttons_top, render_button_width, button_height, TRUE);
+    MoveWindow(g_state.status_label, padding, status_top, width - padding * 2, status_height, TRUE);
 }
 
 LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -1071,16 +1082,22 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             DEFAULT_PITCH | FF_DONTCARE,
             L"Segoe UI");
 
-        create_main_menu(hwnd);
         g_state.brand_header = CreateWindowW(L"DATBrandHeader", L"", WS_CHILD | WS_VISIBLE,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBrandHeaderId)), nullptr, nullptr);
+        g_state.file_label = CreateWindowW(L"STATIC", L"DAT file:", WS_CHILD | WS_VISIBLE | SS_LEFT,
+            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFileLabelId)), nullptr, nullptr);
+        g_state.file_path_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"No .dat file selected",
+            WS_CHILD | WS_VISIBLE | ES_LEFT | ES_AUTOHSCROLL | ES_READONLY,
+            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFilePathId)), nullptr, nullptr);
         g_state.open_button = CreateWindowW(L"BUTTON", L"Open .dat", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpenButtonId)), nullptr, nullptr);
         g_state.play_button = CreateWindowW(L"BUTTON", L"Play", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPlayButtonId)), nullptr, nullptr);
-        g_state.decode_smoke_button = CreateWindowW(L"BUTTON", L"Decode Smoke Test", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
+        g_state.details_group = CreateWindowW(L"BUTTON", L"Details / Diagnostics", WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDetailsGroupId)), nullptr, nullptr);
+        g_state.decode_smoke_button = CreateWindowW(L"BUTTON", L"Decode Test", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDecodeSmokeButtonId)), nullptr, nullptr);
-        g_state.render_first_frame_button = CreateWindowW(L"BUTTON", L"Render First Frame", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
+        g_state.render_first_frame_button = CreateWindowW(L"BUTTON", L"Render Frame", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRenderFirstFrameButtonId)), nullptr, nullptr);
         g_state.timeline = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | WS_DISABLED | TBS_AUTOTICKS,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTimelineId)), nullptr, nullptr);
@@ -1092,8 +1109,11 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabelId)), nullptr, nullptr);
 
         apply_default_font(g_state.brand_header);
+        apply_default_font(g_state.file_label);
+        apply_default_font(g_state.file_path_edit);
         apply_default_font(g_state.open_button);
         apply_default_font(g_state.play_button);
+        apply_default_font(g_state.details_group);
         apply_default_font(g_state.decode_smoke_button);
         apply_default_font(g_state.render_first_frame_button);
         apply_default_font(g_state.info_label);
@@ -1116,6 +1136,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         return reinterpret_cast<LRESULT>(g_state.window_background_brush);
     }
 
+    case WM_CTLCOLOREDIT: {
+        HDC hdc = reinterpret_cast<HDC>(wparam);
+        SetBkColor(hdc, RGB(255, 255, 255));
+        SetTextColor(hdc, RGB(35, 43, 51));
+        return reinterpret_cast<LRESULT>(GetStockObject(WHITE_BRUSH));
+    }
+
     case WM_ERASEBKGND: {
         HDC hdc = reinterpret_cast<HDC>(wparam);
         RECT rect = {};
@@ -1127,22 +1154,16 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
     case WM_COMMAND:
         switch (LOWORD(wparam)) {
         case kOpenButtonId:
-        case kMenuOpenId:
             load_dat_file(hwnd);
             return 0;
         case kPlayButtonId:
             toggle_playback();
             return 0;
         case kDecodeSmokeButtonId:
-        case kMenuDecodeSmokeId:
             run_decode_smoke_test();
             return 0;
         case kRenderFirstFrameButtonId:
-        case kMenuRenderFirstFrameId:
             run_first_frame_render_smoke_test();
-            return 0;
-        case kMenuExitId:
-            DestroyWindow(hwnd);
             return 0;
         default:
             break;
@@ -1304,7 +1325,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         return 1;
     }
 
-    g_state.window_background_brush = CreateSolidBrush(RGB(255, 255, 255));
+    g_state.window_background_brush = CreateSolidBrush(RGB(240, 240, 240));
 
     const wchar_t class_name[] = L"DATPlayerShellWindow";
     WNDCLASSEXW window_class = {};
@@ -1366,8 +1387,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        920,
-        580,
+        1000,
+        700,
         nullptr,
         nullptr,
         instance,
