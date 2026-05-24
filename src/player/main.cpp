@@ -38,6 +38,8 @@ constexpr int kBrandHeaderId = 1008;
 constexpr int kFilePathId = 1009;
 constexpr int kFileLabelId = 1010;
 constexpr int kDetailsGroupId = 1011;
+constexpr int kCurrentTimeLabelId = 1012;
+constexpr int kTotalTimeLabelId = 1013;
 constexpr UINT kPlaybackFrameMessage = WM_APP + 1;
 constexpr UINT kPlaybackFinishedMessage = WM_APP + 2;
 constexpr UINT kSeekFinishedMessage = WM_APP + 3;
@@ -83,6 +85,8 @@ struct PlayerState {
     HWND file_label = nullptr;
     HWND file_path_edit = nullptr;
     HWND details_group = nullptr;
+    HWND current_time_label = nullptr;
+    HWND total_time_label = nullptr;
     HWND video_panel = nullptr;
     HWND info_label = nullptr;
     HWND status_label = nullptr;
@@ -257,6 +261,26 @@ std::wstring frame_time_label(std::uint64_t frame) {
     return text.str();
 }
 
+std::wstring format_clock_time(double seconds) {
+    if (seconds <= 0.0) {
+        return L"00:00";
+    }
+
+    const auto whole_seconds = static_cast<std::uint64_t>(seconds + 0.5);
+    const auto hours = whole_seconds / 3600;
+    const auto minutes = (whole_seconds / 60) % 60;
+    const auto secs = whole_seconds % 60;
+
+    std::wostringstream text;
+    text << std::setfill(L'0');
+    if (hours > 0) {
+        text << hours << L":" << std::setw(2) << minutes << L":" << std::setw(2) << secs;
+    } else {
+        text << std::setw(2) << minutes << L":" << std::setw(2) << secs;
+    }
+    return text.str();
+}
+
 void set_status(const std::wstring& text) {
     if (g_state.status_label) {
         SetWindowTextW(g_state.status_label, text.c_str());
@@ -289,6 +313,14 @@ void update_timeline() {
         SendMessageW(g_state.timeline, TBM_SETRANGE, TRUE, MAKELPARAM(0, kTrackbarMax));
         SendMessageW(g_state.timeline, TBM_SETPOS, TRUE, timeline_position_from_frame(g_state.current_frame));
         EnableWindow(g_state.timeline, frame_count() > 0);
+    }
+    if (g_state.current_time_label) {
+        const auto text = format_clock_time(seconds_for_frame(g_state.current_frame));
+        SetWindowTextW(g_state.current_time_label, text.c_str());
+    }
+    if (g_state.total_time_label) {
+        const auto text = format_clock_time(total_duration_seconds());
+        SetWindowTextW(g_state.total_time_label, text.c_str());
     }
 }
 
@@ -606,6 +638,8 @@ void set_enabled_after_load(bool enabled) {
     EnableWindow(g_state.decode_smoke_button, enabled);
     EnableWindow(g_state.render_first_frame_button, enabled);
     EnableWindow(g_state.timeline, enabled);
+    EnableWindow(g_state.current_time_label, enabled);
+    EnableWindow(g_state.total_time_label, enabled);
 }
 
 void reset_loaded_state() {
@@ -1042,8 +1076,9 @@ void layout_controls(HWND hwnd) {
     const int smoke_button_width = 132;
     const int render_button_width = 132;
     const int button_height = 32;
-    const int timeline_height = 34;
+    const int timeline_height = 28;
     const int status_height = 24;
+    const int time_label_width = 54;
     const int file_top = header_height + 12;
     const int content_top = file_top + file_row_height + 14;
     const int status_top = rect.bottom - status_height - 6;
@@ -1052,9 +1087,9 @@ void layout_controls(HWND hwnd) {
     const int video_width = std::max(240, width - padding * 3 - details_width);
     const int content_height = std::max(220, content_bottom - content_top);
     const int controls_height = button_height + 8;
-    const int video_height = std::max(120, content_height - timeline_height - controls_height - 18);
+    const int video_height = std::max(120, content_height - timeline_height - controls_height - 16);
     const int timeline_top = content_top + video_height + 8;
-    const int controls_top = timeline_top + timeline_height + 4;
+    const int controls_top = timeline_top + timeline_height + 2;
     const int details_left = padding + video_width + padding;
     const int details_inner_left = details_left + 12;
     const int details_inner_top = content_top + 24;
@@ -1067,7 +1102,9 @@ void layout_controls(HWND hwnd) {
     MoveWindow(g_state.file_path_edit, padding + file_label_width, file_top, std::max(80, width - padding * 3 - file_label_width - open_button_width), file_row_height, TRUE);
     MoveWindow(g_state.open_button, width - padding - open_button_width, file_top - 1, open_button_width, button_height, TRUE);
     MoveWindow(g_state.video_panel, padding, content_top, video_width, video_height, TRUE);
-    MoveWindow(g_state.timeline, padding, timeline_top, video_width, timeline_height, TRUE);
+    MoveWindow(g_state.current_time_label, padding, timeline_top + 4, time_label_width, 20, TRUE);
+    MoveWindow(g_state.timeline, padding + time_label_width + 6, timeline_top, video_width - time_label_width * 2 - 12, timeline_height, TRUE);
+    MoveWindow(g_state.total_time_label, padding + video_width - time_label_width, timeline_top + 4, time_label_width, 20, TRUE);
     MoveWindow(g_state.play_button, padding, controls_top, play_button_width, button_height, TRUE);
     MoveWindow(g_state.details_group, details_left, content_top, details_width, content_height, TRUE);
     MoveWindow(g_state.info_label, details_inner_left, details_inner_top, details_inner_width, details_text_height, TRUE);
@@ -1113,8 +1150,12 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDecodeSmokeButtonId)), nullptr, nullptr);
         g_state.render_first_frame_button = CreateWindowW(L"BUTTON", L"Render Frame", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRenderFirstFrameButtonId)), nullptr, nullptr);
-        g_state.timeline = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | WS_DISABLED | TBS_AUTOTICKS,
+        g_state.timeline = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | WS_DISABLED | TBS_NOTICKS,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTimelineId)), nullptr, nullptr);
+        g_state.current_time_label = CreateWindowW(L"STATIC", L"00:00", WS_CHILD | WS_VISIBLE | SS_LEFT,
+            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCurrentTimeLabelId)), nullptr, nullptr);
+        g_state.total_time_label = CreateWindowW(L"STATIC", L"00:00", WS_CHILD | WS_VISIBLE | SS_RIGHT,
+            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTotalTimeLabelId)), nullptr, nullptr);
         g_state.video_panel = CreateWindowW(L"DATVideoPanel", L"", WS_CHILD | WS_VISIBLE | WS_BORDER,
             0, 0, 0, 0, hwnd, nullptr, nullptr, nullptr);
         g_state.info_label = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT,
@@ -1130,11 +1171,14 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         apply_default_font(g_state.details_group);
         apply_default_font(g_state.decode_smoke_button);
         apply_default_font(g_state.render_first_frame_button);
+        apply_default_font(g_state.current_time_label);
+        apply_default_font(g_state.total_time_label);
         apply_default_font(g_state.info_label);
         apply_default_font(g_state.status_label);
 
         SendMessageW(g_state.timeline, TBM_SETRANGE, TRUE, MAKELPARAM(0, kTrackbarMax));
-        SendMessageW(g_state.timeline, TBM_SETTICFREQ, 1000, 0);
+        SendMessageW(g_state.timeline, TBM_SETPAGESIZE, 0, 500);
+        SendMessageW(g_state.timeline, TBM_SETLINESIZE, 0, 100);
         update_info();
         layout_controls(hwnd);
         return 0;
@@ -1197,6 +1241,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 }
                 const int position = static_cast<int>(SendMessageW(g_state.timeline, TBM_GETPOS, 0, 0));
                 const auto target = frame_from_timeline_position(position);
+                if (g_state.current_time_label) {
+                    const auto text = format_clock_time(seconds_for_frame(target));
+                    SetWindowTextW(g_state.current_time_label, text.c_str());
+                }
                 g_state.decode_smoke_text = format_seek_diagnostics(
                     g_state.resume_after_timeline_drag ? L"dragging, will resume" : L"dragging",
                     target,
