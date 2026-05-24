@@ -43,7 +43,11 @@ constexpr int kTotalTimeLabelId = 1013;
 constexpr UINT kPlaybackFrameMessage = WM_APP + 1;
 constexpr UINT kPlaybackFinishedMessage = WM_APP + 2;
 constexpr UINT kSeekFinishedMessage = WM_APP + 3;
+constexpr UINT kPreviewFrameMessage = WM_APP + 4;
+constexpr UINT kPreviewFinishedMessage = WM_APP + 5;
+constexpr UINT_PTR kTimelinePreviewTimerId = 42;
 constexpr int kTrackbarMax = 10000;
+constexpr auto kPreviewThrottle = std::chrono::milliseconds(200);
 
 struct UiPlaybackFrame {
     dat_player::playback::BgraVideoFrame frame;
@@ -74,6 +78,15 @@ struct SeekFinishedMessage {
     std::wstring text;
 };
 
+struct PreviewFinishedMessage {
+    std::uint64_t generation = 0;
+    std::uint64_t target_frame = 0;
+    std::uint64_t keyframe_frame = 0;
+    std::uint64_t rendered_frame = 0;
+    std::uint64_t frames_decoded = 0;
+    std::wstring text;
+};
+
 struct PlayerState {
     HWND hwnd = nullptr;
     HWND open_button = nullptr;
@@ -99,8 +112,11 @@ struct PlayerState {
     std::wstring decode_smoke_text;
     dat_player::playback::BgraVideoFrame rendered_frame;
     std::thread playback_thread;
+    std::thread preview_thread;
     std::atomic_bool stop_playback_requested = false;
+    std::atomic_bool stop_preview_requested = false;
     std::atomic<std::uint64_t> playback_generation = 0;
+    std::atomic<std::uint64_t> preview_generation = 0;
     std::uint64_t frames_rendered = 0;
     std::uint64_t frames_decoded = 0;
     std::uint64_t late_frames = 0;
@@ -113,6 +129,15 @@ struct PlayerState {
     std::uint64_t timeline_preview_frame = 0;
     bool has_pending_seek = false;
     std::uint64_t pending_seek_frame = 0;
+    bool preview_in_flight = false;
+    bool preview_timer_armed = false;
+    std::uint64_t latest_preview_frame = 0;
+    std::uint64_t active_preview_frame = 0;
+    std::uint64_t preview_keyframe_frame = 0;
+    std::uint64_t preview_rendered_frame = 0;
+    std::uint64_t preview_frames_decoded = 0;
+    std::uint64_t preview_superseded = 0;
+    std::chrono::steady_clock::time_point last_preview_started{};
     bool seeking = false;
     bool playing = false;
 };
@@ -320,6 +345,22 @@ void stop_playback() {
     g_state.seeking = false;
 }
 
+void stop_preview(bool join_worker = true) {
+    g_state.stop_preview_requested = true;
+    ++g_state.preview_generation;
+    if (g_state.hwnd) {
+        KillTimer(g_state.hwnd, kTimelinePreviewTimerId);
+    }
+    g_state.preview_timer_armed = false;
+
+    if (join_worker && g_state.preview_thread.joinable() &&
+        g_state.preview_thread.get_id() != std::this_thread::get_id()) {
+        g_state.preview_thread.join();
+    }
+
+    g_state.preview_in_flight = false;
+}
+
 void update_timeline() {
     const auto display_frame = g_state.has_timeline_preview
         ? g_state.timeline_preview_frame
@@ -347,6 +388,15 @@ void update_file_path_text() {
         ? L"No .dat file selected"
         : g_state.loaded_path.wstring();
     SetWindowTextW(g_state.file_path_edit, text.c_str());
+}
+
+void arm_preview_timer(HWND hwnd, std::chrono::milliseconds delay) {
+    if (!hwnd) {
+        return;
+    }
+    const auto ms = static_cast<UINT>(std::max<std::chrono::milliseconds::rep>(1, delay.count()));
+    SetTimer(hwnd, kTimelinePreviewTimerId, ms, nullptr);
+    g_state.preview_timer_armed = true;
 }
 
 std::unique_ptr<Gdiplus::Bitmap> load_png_resource(HINSTANCE instance, int resource_id) {
@@ -659,6 +709,7 @@ void set_enabled_after_load(bool enabled) {
 
 void reset_loaded_state() {
     stop_playback();
+    stop_preview();
     g_state.index = {};
     g_state.loaded_path.clear();
     g_state.decode_smoke_text.clear();
@@ -676,6 +727,14 @@ void reset_loaded_state() {
     g_state.has_pending_seek = false;
     g_state.pending_seek_frame = 0;
     g_state.seeking = false;
+    g_state.preview_in_flight = false;
+    g_state.preview_timer_armed = false;
+    g_state.latest_preview_frame = 0;
+    g_state.active_preview_frame = 0;
+    g_state.preview_keyframe_frame = 0;
+    g_state.preview_rendered_frame = 0;
+    g_state.preview_frames_decoded = 0;
+    g_state.preview_superseded = 0;
     set_enabled_after_load(false);
     if (g_state.video_panel) {
         InvalidateRect(g_state.video_panel, nullptr, TRUE);
@@ -704,6 +763,7 @@ std::filesystem::path ask_for_dat_file(HWND owner) {
 
 void load_dat_file(HWND owner) {
     stop_playback();
+    stop_preview();
     const auto path = ask_for_dat_file(owner);
     if (path.empty()) {
         return;
@@ -736,6 +796,14 @@ void load_dat_file(HWND owner) {
         g_state.has_pending_seek = false;
         g_state.pending_seek_frame = 0;
         g_state.seeking = false;
+        g_state.preview_in_flight = false;
+        g_state.preview_timer_armed = false;
+        g_state.latest_preview_frame = 0;
+        g_state.active_preview_frame = 0;
+        g_state.preview_keyframe_frame = 0;
+        g_state.preview_rendered_frame = 0;
+        g_state.preview_frames_decoded = 0;
+        g_state.preview_superseded = 0;
         set_enabled_after_load(!g_state.index.frames.empty());
         if (g_state.video_panel) {
             InvalidateRect(g_state.video_panel, nullptr, TRUE);
@@ -789,6 +857,7 @@ void run_decode_smoke_test() {
 
     const bool was_playing = g_state.playing;
     stop_playback();
+    stop_preview();
     set_status(L"Running Media Foundation decode smoke test...");
     dat_player::playback::H264DecodeSmokeTester tester;
     const auto result = tester.run(g_state.loaded_path, g_state.index);
@@ -839,6 +908,7 @@ void run_first_frame_render_smoke_test() {
 
     const bool was_playing = g_state.playing;
     stop_playback();
+    stop_preview();
     set_status(L"Rendering first decoded frame...");
     dat_player::playback::H264DecodeSmokeTester tester;
     const auto result = tester.render_first_frame(g_state.loaded_path, g_state.index);
@@ -891,6 +961,19 @@ std::wstring format_seek_diagnostics(
     if (!result_text.empty()) {
         text << L"Result: " << result_text;
     }
+    return text.str();
+}
+
+std::wstring format_preview_diagnostics(const std::wstring& state, std::uint64_t target_frame) {
+    std::wostringstream text;
+    text << L"Live scrub preview\r\n"
+         << L"State: " << state << L"\r\n"
+         << L"Preview target: " << frame_time_label(target_frame) << L"\r\n"
+         << L"Preview keyframe: " << (g_state.preview_keyframe_frame + 1) << L"\r\n"
+         << L"Preview rendered frame: " << (g_state.preview_rendered_frame + 1) << L" / " << frame_count() << L"\r\n"
+         << L"Preview frames decoded: " << g_state.preview_frames_decoded << L"\r\n"
+         << L"Preview requests superseded: " << g_state.preview_superseded << L"\r\n"
+         << L"Committed current frame: " << (g_state.current_frame + 1) << L" / " << frame_count();
     return text.str();
 }
 
@@ -960,6 +1043,93 @@ void start_seek_to_frame(std::uint64_t target_frame, bool resume_after_seek) {
         }
         message.release();
     });
+}
+
+void start_preview_to_frame(std::uint64_t target_frame) {
+    if (g_state.loaded_path.empty() || g_state.index.frames.empty() || !g_state.timeline_dragging) {
+        return;
+    }
+    if (g_state.preview_in_flight || g_state.seeking || g_state.playing) {
+        ++g_state.preview_superseded;
+        return;
+    }
+
+    if (g_state.preview_thread.joinable()) {
+        g_state.preview_thread.join();
+    }
+
+    const auto clamped_target = std::min<std::uint64_t>(target_frame, frame_count() - 1);
+    const auto keyframe = nearest_previous_keyframe(clamped_target);
+    const std::uint64_t generation = ++g_state.preview_generation;
+    g_state.stop_preview_requested = false;
+    g_state.preview_in_flight = true;
+    g_state.active_preview_frame = clamped_target;
+    g_state.preview_keyframe_frame = keyframe;
+    g_state.last_preview_started = std::chrono::steady_clock::now();
+    g_state.decode_smoke_text = format_preview_diagnostics(L"decoding", clamped_target);
+    update_info();
+
+    const HWND hwnd = g_state.hwnd;
+    const auto path = g_state.loaded_path;
+    const auto index = g_state.index;
+
+    g_state.preview_thread = std::thread([hwnd, path, index, clamped_target, keyframe, generation]() {
+        dat_player::playback::H264DecodeSmokeTester tester;
+        dat_player::playback::ForwardPlaybackOptions options;
+        options.start_frame = clamped_target;
+        options.fallback_fps = 30.0;
+
+        std::uint64_t decoded_at_target = 0;
+        std::uint64_t rendered_frame = clamped_target;
+        const auto result = tester.play_forward(path, index, options, [&](dat_player::playback::ForwardPlaybackFrame&& frame) {
+            if (g_state.stop_preview_requested || g_state.preview_generation.load() != generation) {
+                return false;
+            }
+
+            decoded_at_target = frame.frames_decoded;
+            rendered_frame = frame.frame_index;
+            auto ui_frame = std::make_unique<UiPlaybackFrame>();
+            ui_frame->frame = std::move(frame.frame);
+            ui_frame->generation = generation;
+            ui_frame->frame_index = frame.frame_index;
+            ui_frame->timestamp = frame.timestamp;
+            ui_frame->frames_submitted = frame.frames_submitted;
+            ui_frame->frames_decoded = frame.frames_decoded;
+            if (!PostMessageW(hwnd, kPreviewFrameMessage, 0, reinterpret_cast<LPARAM>(ui_frame.release()))) {
+                return false;
+            }
+            return false;
+        });
+
+        auto message = std::make_unique<PreviewFinishedMessage>();
+        message->generation = generation;
+        message->target_frame = clamped_target;
+        message->keyframe_frame = keyframe;
+        message->rendered_frame = rendered_frame;
+        message->frames_decoded = decoded_at_target != 0 ? decoded_at_target : result.frames_decoded;
+        message->text = result.message;
+        if (!PostMessageW(hwnd, kPreviewFinishedMessage, 0, reinterpret_cast<LPARAM>(message.get()))) {
+            return;
+        }
+        message.release();
+    });
+}
+
+void schedule_preview_for_frame(std::uint64_t target_frame) {
+    g_state.latest_preview_frame = target_frame;
+    if (g_state.preview_in_flight) {
+        ++g_state.preview_superseded;
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed = now - g_state.last_preview_started;
+    if (elapsed >= kPreviewThrottle) {
+        start_preview_to_frame(target_frame);
+        return;
+    }
+
+    arm_preview_timer(g_state.hwnd, std::chrono::duration_cast<std::chrono::milliseconds>(kPreviewThrottle - elapsed));
 }
 
 void start_forward_playback() {
@@ -1281,7 +1451,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                     nearest_previous_keyframe(target),
                     0);
                 SetWindowTextW(g_state.info_label, build_info_text().c_str());
-                set_status(L"Release the timeline to seek.");
+                schedule_preview_for_frame(target);
+                set_status(L"Scrubbing preview. Release the timeline to commit seek.");
                 return 0;
             }
 
@@ -1294,6 +1465,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 g_state.timeline_dragging = false;
                 g_state.resume_after_timeline_drag = false;
                 g_state.has_timeline_preview = false;
+                stop_preview(false);
                 start_seek_to_frame(target, resume);
                 return 0;
             }
@@ -1304,7 +1476,19 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             const int position = static_cast<int>(SendMessageW(g_state.timeline, TBM_GETPOS, 0, 0));
             const auto target = frame_from_timeline_position(position);
             g_state.has_timeline_preview = false;
+            stop_preview(false);
             start_seek_to_frame(target, false);
+            return 0;
+        }
+        break;
+
+    case WM_TIMER:
+        if (wparam == kTimelinePreviewTimerId) {
+            KillTimer(hwnd, kTimelinePreviewTimerId);
+            g_state.preview_timer_armed = false;
+            if (g_state.timeline_dragging && g_state.has_timeline_preview && !g_state.preview_in_flight) {
+                start_preview_to_frame(g_state.latest_preview_frame);
+            }
             return 0;
         }
         break;
@@ -1359,6 +1543,55 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         return 0;
     }
 
+    case kPreviewFrameMessage: {
+        std::unique_ptr<UiPlaybackFrame> frame(reinterpret_cast<UiPlaybackFrame*>(lparam));
+        if (frame &&
+            frame->generation == g_state.preview_generation.load() &&
+            g_state.timeline_dragging &&
+            g_state.has_timeline_preview) {
+            g_state.rendered_frame = std::move(frame->frame);
+            g_state.preview_rendered_frame = frame->frame_index;
+            g_state.preview_frames_decoded = frame->frames_decoded;
+            g_state.decode_smoke_text = format_preview_diagnostics(L"rendered", g_state.timeline_preview_frame);
+            if (g_state.video_panel) {
+                InvalidateRect(g_state.video_panel, nullptr, FALSE);
+            }
+            update_info();
+            std::wostringstream status;
+            status << L"Preview frame " << (frame->frame_index + 1) << L" / " << frame_count()
+                   << L". Release timeline to commit.";
+            set_status(status.str());
+        }
+        return 0;
+    }
+
+    case kPreviewFinishedMessage: {
+        std::unique_ptr<PreviewFinishedMessage> preview_message(reinterpret_cast<PreviewFinishedMessage*>(lparam));
+        const bool valid = preview_message &&
+            preview_message->generation == g_state.preview_generation.load();
+        if (g_state.preview_thread.joinable() &&
+            g_state.preview_thread.get_id() != std::this_thread::get_id()) {
+            g_state.preview_thread.join();
+        }
+        if (!valid) {
+            return 0;
+        }
+
+        g_state.preview_in_flight = false;
+        g_state.preview_keyframe_frame = preview_message->keyframe_frame;
+        g_state.preview_rendered_frame = preview_message->rendered_frame;
+        g_state.preview_frames_decoded = preview_message->frames_decoded;
+
+        if (g_state.timeline_dragging && g_state.has_timeline_preview) {
+            g_state.decode_smoke_text = format_preview_diagnostics(L"ready", g_state.timeline_preview_frame);
+            update_info();
+            if (g_state.latest_preview_frame != g_state.active_preview_frame) {
+                arm_preview_timer(hwnd, std::chrono::milliseconds(1));
+            }
+        }
+        return 0;
+    }
+
     case kSeekFinishedMessage: {
         std::unique_ptr<SeekFinishedMessage> seek_message(reinterpret_cast<SeekFinishedMessage*>(lparam));
         if (!seek_message || seek_message->generation != g_state.playback_generation.load()) {
@@ -1396,6 +1629,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
 
     case WM_DESTROY:
         stop_playback();
+        stop_preview();
         if (g_state.ui_font) {
             DeleteObject(g_state.ui_font);
             g_state.ui_font = nullptr;
