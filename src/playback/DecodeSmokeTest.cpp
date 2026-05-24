@@ -1,9 +1,14 @@
 #include "dat_player/DatFrameIndexer.h"
 #include "playback/H264Decoder.h"
 
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -59,11 +64,60 @@ std::uint64_t nearest_previous_keyframe(const dat_player::DatFrameIndex& index, 
     return 0;
 }
 
+void write_u16(std::ofstream& output, std::uint16_t value) {
+    output.put(static_cast<char>(value & 0xff));
+    output.put(static_cast<char>((value >> 8) & 0xff));
+}
+
+void write_u32(std::ofstream& output, std::uint32_t value) {
+    output.put(static_cast<char>(value & 0xff));
+    output.put(static_cast<char>((value >> 8) & 0xff));
+    output.put(static_cast<char>((value >> 16) & 0xff));
+    output.put(static_cast<char>((value >> 24) & 0xff));
+}
+
+void write_bgra_bmp(const std::filesystem::path& output_path, const dat_player::playback::BgraVideoFrame& frame) {
+    if (frame.pixels.empty() || frame.display_width == 0 || frame.display_height == 0 ||
+        frame.stride_bytes != frame.display_width * 4) {
+        throw std::runtime_error("No tightly packed BGRA frame is available to write.");
+    }
+
+    std::ofstream output(output_path, std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("Unable to create BMP output file.");
+    }
+
+    const std::uint32_t pixel_bytes = frame.stride_bytes * frame.display_height;
+    const std::uint32_t file_header_bytes = 14;
+    const std::uint32_t dib_header_bytes = 40;
+    const std::uint32_t pixel_offset = file_header_bytes + dib_header_bytes;
+    const std::uint32_t file_size = pixel_offset + pixel_bytes;
+
+    write_u16(output, 0x4d42);
+    write_u32(output, file_size);
+    write_u16(output, 0);
+    write_u16(output, 0);
+    write_u32(output, pixel_offset);
+
+    write_u32(output, dib_header_bytes);
+    write_u32(output, frame.display_width);
+    write_u32(output, static_cast<std::uint32_t>(0 - frame.display_height));
+    write_u16(output, 1);
+    write_u16(output, 32);
+    write_u32(output, 0);
+    write_u32(output, pixel_bytes);
+    write_u32(output, 2835);
+    write_u32(output, 2835);
+    write_u32(output, 0);
+    write_u32(output, 0);
+    output.write(reinterpret_cast<const char*>(frame.pixels.data()), static_cast<std::streamsize>(frame.pixels.size()));
+}
+
 } // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
     if (argc < 2) {
-        std::wcerr << L"Usage: dat_decode_smoke_test.exe <path-to-dat> [--render|--playback-smoke [max-frames]|--seek-smoke <frame-index>]\n";
+        std::wcerr << L"Usage: dat_decode_smoke_test.exe <path-to-dat> [--render|--playback-smoke [max-frames]|--seek-smoke <frame-index>|--dump-frame-bmp <frame-index> <output.bmp>]\n";
         return 2;
     }
 
@@ -71,6 +125,7 @@ int wmain(int argc, wchar_t* argv[]) {
     const bool render_first_frame = argc >= 3 && std::wstring(argv[2]) == L"--render";
     const bool playback_smoke = argc >= 3 && std::wstring(argv[2]) == L"--playback-smoke";
     const bool seek_smoke = argc >= 3 && std::wstring(argv[2]) == L"--seek-smoke";
+    const bool dump_frame_bmp = argc >= 3 && std::wstring(argv[2]) == L"--dump-frame-bmp";
     std::uint64_t max_playback_frames = 180;
     if (playback_smoke && argc >= 4) {
         max_playback_frames = std::wcstoull(argv[3], nullptr, 10);
@@ -81,6 +136,16 @@ int wmain(int argc, wchar_t* argv[]) {
     std::uint64_t seek_target = 0;
     if (seek_smoke && argc >= 4) {
         seek_target = std::wcstoull(argv[3], nullptr, 10);
+    }
+    std::uint64_t dump_target = 0;
+    std::filesystem::path dump_output_path;
+    if (dump_frame_bmp) {
+        if (argc < 5) {
+            std::wcerr << L"--dump-frame-bmp requires <frame-index> <output.bmp>.\n";
+            return 2;
+        }
+        dump_target = std::wcstoull(argv[3], nullptr, 10);
+        dump_output_path = argv[4];
     }
     try {
         dat_player::DatFrameIndexer indexer;
@@ -138,6 +203,31 @@ int wmain(int argc, wchar_t* argv[]) {
                 std::wcout << L"Seek rendered display: " << rendered_frame.frame.display_width << L" x " << rendered_frame.frame.display_height << L"\n";
             }
             return rendered > 0 && rendered_frame.frame_index == seek_target ? 0 : 1;
+        }
+        if (dump_frame_bmp) {
+            if (index.frames.empty()) {
+                std::wcerr << L"No indexed frames to dump.\n";
+                return 1;
+            }
+            dump_target = std::min<std::uint64_t>(dump_target, static_cast<std::uint64_t>(index.frames.size() - 1));
+            dat_player::playback::ForwardPlaybackOptions options;
+            options.start_frame = dump_target;
+            std::uint64_t rendered = 0;
+            dat_player::playback::ForwardPlaybackFrame rendered_frame;
+            const auto result = tester.play_forward(dat_path, index, options, [&](dat_player::playback::ForwardPlaybackFrame&& frame) {
+                ++rendered;
+                rendered_frame = std::move(frame);
+                return false;
+            });
+            print_result(result);
+            if (rendered == 0 || rendered_frame.frame_index != dump_target) {
+                std::wcerr << L"Unable to decode requested frame for BMP dump.\n";
+                return 1;
+            }
+            write_bgra_bmp(dump_output_path, rendered_frame.frame);
+            std::wcout << L"Dumped frame " << rendered_frame.frame_index << L" to " << dump_output_path.wstring() << L"\n";
+            std::wcout << L"Dumped display: " << rendered_frame.frame.display_width << L" x " << rendered_frame.frame.display_height << L"\n";
+            return 0;
         }
 
         const auto result = tester.run(dat_path, index);

@@ -155,15 +155,15 @@ std::uint8_t clamp_to_byte(int value) {
 }
 
 void nv12_to_bgra(
-    const std::uint8_t* source,
-    std::size_t source_size,
+    const std::uint8_t* y_plane,
+    const std::uint8_t* uv_plane,
     LONG source_stride,
     std::uint32_t decoded_width,
     std::uint32_t decoded_height,
     std::uint32_t display_width,
     std::uint32_t display_height,
     BgraVideoFrame& frame) {
-    if (!source || source_stride == 0 || decoded_width == 0 || decoded_height == 0 ||
+    if (!y_plane || !uv_plane || source_stride == 0 || decoded_width == 0 || decoded_height == 0 ||
         display_width == 0 || display_height == 0) {
         throw std::runtime_error("Invalid NV12 frame dimensions.");
     }
@@ -171,10 +171,6 @@ void nv12_to_bgra(
     const std::uint32_t crop_width = std::min(display_width, decoded_width);
     const std::uint32_t crop_height = std::min(display_height, decoded_height);
     const std::size_t abs_stride = static_cast<std::size_t>(std::abs(source_stride));
-    const std::size_t required_size = abs_stride * decoded_height + abs_stride * ((decoded_height + 1) / 2);
-    if (source_size < required_size) {
-        throw std::runtime_error("Decoded NV12 buffer is smaller than expected for its stride and height.");
-    }
     if (crop_width > abs_stride) {
         throw std::runtime_error("Decoded NV12 stride is smaller than the display width.");
     }
@@ -187,16 +183,9 @@ void nv12_to_bgra(
     frame.decoded_subtype = L"NV12";
     frame.pixels.assign(static_cast<std::size_t>(frame.stride_bytes) * frame.display_height, 0);
 
-    const auto y_row_index = [decoded_height, source_stride](std::uint32_t row) {
-        return source_stride > 0 ? row : decoded_height - 1 - row;
-    };
-
-    const std::uint8_t* y_plane = source;
-    const std::uint8_t* uv_plane = source + abs_stride * decoded_height;
-
     for (std::uint32_t y = 0; y < crop_height; ++y) {
-        const std::uint8_t* y_row = y_plane + static_cast<std::size_t>(y_row_index(y)) * abs_stride;
-        const std::uint8_t* uv_row = uv_plane + static_cast<std::size_t>(y / 2) * abs_stride;
+        const std::uint8_t* y_row = y_plane + static_cast<std::ptrdiff_t>(y) * source_stride;
+        const std::uint8_t* uv_row = uv_plane + static_cast<std::ptrdiff_t>(y / 2) * source_stride;
         std::uint8_t* dst = frame.pixels.data() + static_cast<std::size_t>(y) * frame.stride_bytes;
 
         for (std::uint32_t x = 0; x < crop_width; ++x) {
@@ -486,29 +475,67 @@ void decode_sample_to_bgra(
     }
 
     ComPtr<IMFMediaBuffer> buffer;
-    HRESULT hr = sample->ConvertToContiguousBuffer(buffer.put());
+    HRESULT hr = sample->GetBufferByIndex(0, buffer.put());
+    if (FAILED(hr) || !buffer) {
+        hr = sample->ConvertToContiguousBuffer(buffer.put());
+    }
     if (FAILED(hr)) {
         throw std::runtime_error("Failed to access decoded output sample buffer: " + hresult_to_string(hr));
-    }
-
-    BYTE* bytes = nullptr;
-    DWORD max_length = 0;
-    DWORD current_length = 0;
-    hr = buffer->Lock(&bytes, &max_length, &current_length);
-    if (FAILED(hr)) {
-        throw std::runtime_error("Failed to lock decoded output sample buffer: " + hresult_to_string(hr));
     }
 
     try {
         const std::uint32_t display_width = !index.frames.empty() ? index.frames.front().width : decoded_width;
         const std::uint32_t display_height = !index.frames.empty() ? index.frames.front().height : decoded_height;
-        nv12_to_bgra(bytes, current_length, stride, decoded_width, decoded_height, display_width, display_height, frame);
-    } catch (...) {
+
+        ComPtr<IMF2DBuffer> buffer_2d;
+        if (SUCCEEDED(buffer->QueryInterface(__uuidof(IMF2DBuffer), reinterpret_cast<void**>(buffer_2d.put()))) && buffer_2d) {
+            BYTE* scanline0 = nullptr;
+            LONG pitch = 0;
+            hr = buffer_2d->Lock2D(&scanline0, &pitch);
+            if (FAILED(hr)) {
+                throw std::runtime_error("Failed to lock decoded NV12 2D buffer: " + hresult_to_string(hr));
+            }
+            try {
+                const LONG actual_stride = pitch != 0 ? pitch : stride;
+                if (actual_stride < 0) {
+                    throw std::runtime_error("Negative NV12 output pitch is not supported yet.");
+                }
+                const std::uint8_t* y_plane = scanline0;
+                const std::uint8_t* uv_plane = scanline0 + static_cast<std::size_t>(actual_stride) * decoded_height;
+                nv12_to_bgra(y_plane, uv_plane, actual_stride, decoded_width, decoded_height, display_width, display_height, frame);
+            } catch (...) {
+                buffer_2d->Unlock2D();
+                throw;
+            }
+            buffer_2d->Unlock2D();
+            return;
+        }
+
+        BYTE* bytes = nullptr;
+        DWORD max_length = 0;
+        DWORD current_length = 0;
+        hr = buffer->Lock(&bytes, &max_length, &current_length);
+        if (FAILED(hr)) {
+            throw std::runtime_error("Failed to lock decoded output sample buffer: " + hresult_to_string(hr));
+        }
+
+        try {
+            const std::size_t abs_stride = static_cast<std::size_t>(std::abs(stride));
+            const std::size_t required_size = abs_stride * decoded_height + abs_stride * ((decoded_height + 1) / 2);
+            if (current_length < required_size) {
+                throw std::runtime_error("Decoded NV12 buffer is smaller than expected for its stride and height.");
+            }
+            const std::uint8_t* y_plane = bytes;
+            const std::uint8_t* uv_plane = bytes + abs_stride * decoded_height;
+            nv12_to_bgra(y_plane, uv_plane, stride, decoded_width, decoded_height, display_width, display_height, frame);
+        } catch (...) {
+            buffer->Unlock();
+            throw;
+        }
         buffer->Unlock();
+    } catch (...) {
         throw;
     }
-
-    buffer->Unlock();
 }
 
 bool try_process_output(

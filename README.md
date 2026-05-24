@@ -145,6 +145,12 @@ forward until the requested frame is rendered:
 .\build\Release\dat_decode_smoke_test.exe "W:\Projects\Camera 205 Sample\Camera 205 Sample\dvrfile00000001.dat" --seek-smoke 4458
 ```
 
+Rendered BGRA output can be dumped to a BMP for visual inspection:
+
+```powershell
+.\build\Release\dat_decode_smoke_test.exe "W:\Projects\Camera 205 Sample\Camera 205 Sample\dvrfile00000001.dat" --dump-frame-bmp 2229 frame_2229.bmp
+```
+
 ## DAT Record Assumptions
 
 - Markers are ASCII `H264` and `I264`

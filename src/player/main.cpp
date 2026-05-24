@@ -505,14 +505,23 @@ LRESULT CALLBACK brand_header_proc(HWND hwnd, UINT message, WPARAM wparam, LPARA
 
 LRESULT CALLBACK video_panel_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
+    case WM_ERASEBKGND:
+        return 1;
+
     case WM_PAINT: {
         PAINTSTRUCT ps = {};
         HDC hdc = BeginPaint(hwnd, &ps);
         RECT rect = {};
         GetClientRect(hwnd, &rect);
 
+        const int width = std::max<int>(1, rect.right - rect.left);
+        const int height = std::max<int>(1, rect.bottom - rect.top);
+        HDC memory_dc = CreateCompatibleDC(hdc);
+        HBITMAP memory_bitmap = CreateCompatibleBitmap(hdc, width, height);
+        HGDIOBJ old_bitmap = SelectObject(memory_dc, memory_bitmap);
+
         HBRUSH background = CreateSolidBrush(RGB(18, 18, 18));
-        FillRect(hdc, &rect, background);
+        FillRect(memory_dc, &rect, background);
         DeleteObject(background);
 
         const auto& frame = g_state.rendered_frame;
@@ -527,7 +536,7 @@ LRESULT CALLBACK video_panel_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM
             bitmap_info.bmiHeader.biCompression = BI_RGB;
 
             StretchDIBits(
-                hdc,
+                memory_dc,
                 draw_rect.left,
                 draw_rect.top,
                 draw_rect.right - draw_rect.left,
@@ -541,11 +550,15 @@ LRESULT CALLBACK video_panel_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM
                 DIB_RGB_COLORS,
                 SRCCOPY);
         } else {
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(210, 210, 210));
-            DrawTextW(hdc, L"No rendered frame", -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            SetBkMode(memory_dc, TRANSPARENT);
+            SetTextColor(memory_dc, RGB(210, 210, 210));
+            DrawTextW(memory_dc, L"No rendered frame", -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
 
+        BitBlt(hdc, 0, 0, width, height, memory_dc, 0, 0, SRCCOPY);
+        SelectObject(memory_dc, old_bitmap);
+        DeleteObject(memory_bitmap);
+        DeleteDC(memory_dc);
         EndPaint(hwnd, &ps);
         return 0;
     }
