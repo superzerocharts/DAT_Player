@@ -8,6 +8,7 @@
 #include <objidl.h>
 #include <propidl.h>
 #include <gdiplus.h>
+#include <shellapi.h>
 
 #include <algorithm>
 #include <atomic>
@@ -17,6 +18,7 @@
 #include <cwctype>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -147,6 +149,7 @@ struct PlayerState {
 PlayerState g_state;
 
 void start_forward_playback();
+void handle_drop_files(HWND hwnd, HDROP drop);
 
 std::wstring widen(const std::string& value) {
     if (value.empty()) {
@@ -179,6 +182,33 @@ bool has_dat_extension(const std::filesystem::path& path) {
         return static_cast<wchar_t>(std::towlower(ch));
     });
     return extension == L".dat";
+}
+
+bool is_existing_readable_dat_file(const std::filesystem::path& path, std::wstring& error) {
+    std::error_code ec;
+    if (!has_dat_extension(path)) {
+        error = L"Unsupported drop: please drop one .dat file.";
+        return false;
+    }
+    if (!std::filesystem::exists(path, ec) || ec) {
+        error = L"Dropped .dat file does not exist.";
+        return false;
+    }
+    if (!std::filesystem::is_regular_file(path, ec) || ec) {
+        error = L"Unsupported drop: please drop one .dat file, not a folder.";
+        return false;
+    }
+    const auto size = std::filesystem::file_size(path, ec);
+    if (ec || size == 0) {
+        error = L"Dropped .dat file is empty or unreadable.";
+        return false;
+    }
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        error = L"Dropped .dat file is not readable.";
+        return false;
+    }
+    return true;
 }
 
 std::uint64_t frame_count() {
@@ -609,6 +639,10 @@ LRESULT CALLBACK video_panel_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM
     case WM_ERASEBKGND:
         return 1;
 
+    case WM_DROPFILES:
+        handle_drop_files(g_state.hwnd ? g_state.hwnd : hwnd, reinterpret_cast<HDROP>(wparam));
+        return 0;
+
     case WM_PAINT: {
         PAINTSTRUCT ps = {};
         HDC hdc = BeginPaint(hwnd, &ps);
@@ -766,21 +800,25 @@ std::filesystem::path ask_for_dat_file(HWND owner) {
     return std::filesystem::path(file_name);
 }
 
-void load_dat_file(HWND owner) {
+bool load_dat_path(HWND owner, const std::filesystem::path& path, bool dropped_file) {
     stop_playback();
     stop_preview();
-    const auto path = ask_for_dat_file(owner);
     if (path.empty()) {
-        return;
+        return false;
     }
 
-    if (!has_dat_extension(path)) {
-        MessageBoxW(owner, L"Only .dat files are supported in this phase.", L"Unsupported File", MB_OK | MB_ICONWARNING);
-        return;
+    std::wstring validation_error;
+    if (!is_existing_readable_dat_file(path, validation_error)) {
+        reset_loaded_state();
+        set_status(validation_error.empty() ? L"Unsupported drop: please drop one .dat file." : validation_error);
+        if (!dropped_file) {
+            MessageBoxW(owner, L"Only readable .dat files are supported.", L"Unsupported File", MB_OK | MB_ICONWARNING);
+        }
+        return false;
     }
 
     try {
-        set_status(L"Indexing DAT file...");
+        set_status(dropped_file ? L"Loading dropped file..." : L"Indexing DAT file...");
         dat_player::DatFrameIndexer indexer;
         auto index = indexer.index_file(path);
 
@@ -816,17 +854,55 @@ void load_dat_file(HWND owner) {
         update_info();
 
         if (g_state.index.frames.empty()) {
-            set_status(L"No valid H264/I264 frame records were found.");
+            reset_loaded_state();
+            set_status(dropped_file
+                ? L"Dropped .dat file could not be interpreted as compatible video."
+                : L"No valid H264/I264 frame records were found.");
+            return false;
         } else {
             set_status(L"Loaded index. Starting playback...");
             start_forward_playback();
+            return true;
         }
     } catch (const std::exception& ex) {
         reset_loaded_state();
         const auto message = L"Unable to index DAT file:\r\n" + widen(ex.what());
-        MessageBoxW(owner, message.c_str(), L"Index Error", MB_OK | MB_ICONERROR);
-        set_status(L"Indexing failed.");
+        if (!dropped_file) {
+            MessageBoxW(owner, message.c_str(), L"Index Error", MB_OK | MB_ICONERROR);
+        }
+        set_status(dropped_file
+            ? L"Dropped .dat file could not be interpreted as compatible video."
+            : L"Indexing failed.");
+        return false;
     }
+}
+
+void load_dat_file(HWND owner) {
+    const auto path = ask_for_dat_file(owner);
+    if (path.empty()) {
+        return;
+    }
+    load_dat_path(owner, path, false);
+}
+
+void handle_drop_files(HWND hwnd, HDROP drop) {
+    const UINT file_count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+    if (file_count != 1) {
+        stop_playback();
+        stop_preview();
+        DragFinish(drop);
+        reset_loaded_state();
+        set_status(L"Unsupported drop: please drop one .dat file.");
+        return;
+    }
+
+    const UINT length = DragQueryFileW(drop, 0, nullptr, 0);
+    std::wstring dropped_path(static_cast<std::size_t>(length) + 1, L'\0');
+    DragQueryFileW(drop, 0, dropped_path.data(), length + 1);
+    dropped_path.resize(length);
+    DragFinish(drop);
+
+    load_dat_path(hwnd, std::filesystem::path(dropped_path), true);
 }
 
 std::wstring format_decode_smoke_result(const dat_player::playback::DecodeSmokeTestResult& result) {
@@ -1434,6 +1510,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTotalTimeLabelId)), nullptr, nullptr);
         g_state.video_panel = CreateWindowW(L"DATVideoPanel", L"", WS_CHILD | WS_VISIBLE | WS_BORDER,
             0, 0, 0, 0, hwnd, nullptr, nullptr, nullptr);
+        DragAcceptFiles(hwnd, TRUE);
+        DragAcceptFiles(g_state.video_panel, TRUE);
         g_state.info_label = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kInfoLabelId)), nullptr, nullptr);
         g_state.status_label = CreateWindowW(L"STATIC", L"Ready. Open a compatible .dat file to begin.", WS_CHILD | WS_VISIBLE | SS_LEFT,
@@ -1507,6 +1585,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             break;
         }
         break;
+
+    case WM_DROPFILES:
+        handle_drop_files(hwnd, reinterpret_cast<HDROP>(wparam));
+        return 0;
 
     case WM_HSCROLL:
         if (reinterpret_cast<HWND>(lparam) == g_state.timeline && !g_state.index.frames.empty()) {
@@ -1710,6 +1792,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
     }
 
     case WM_DESTROY:
+        DragAcceptFiles(g_state.video_panel, FALSE);
+        DragAcceptFiles(hwnd, FALSE);
         stop_playback();
         stop_preview();
         if (g_state.ui_font) {
