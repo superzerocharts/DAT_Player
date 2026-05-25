@@ -266,13 +266,15 @@ double playback_fps() {
 }
 
 double playback_speed_multiplier_from_index(int index) {
-    switch (std::clamp(index, 0, 3)) {
+    switch (std::clamp(index, 0, 4)) {
     case 1:
         return 2.0;
     case 2:
         return 4.0;
     case 3:
         return 8.0;
+    case 4:
+        return 16.0;
     default:
         return 1.0;
     }
@@ -283,16 +285,19 @@ double playback_speed_multiplier() {
 }
 
 std::wstring playback_speed_label(double speed) {
+    if (speed >= 15.5) {
+        return L"x16";
+    }
     if (speed >= 7.5) {
-        return L"8x";
+        return L"x8";
     }
     if (speed >= 3.5) {
-        return L"4x";
+        return L"x4";
     }
     if (speed >= 1.5) {
-        return L"2x";
+        return L"x2";
     }
-    return L"1x";
+    return L"x1";
 }
 
 std::wstring playback_speed_label() {
@@ -300,16 +305,42 @@ std::wstring playback_speed_label() {
 }
 
 std::wstring next_speed_button_text() {
-    switch (std::clamp(g_state.playback_speed_index.load(), 0, 3)) {
+    switch (std::clamp(g_state.playback_speed_index.load(), 0, 4)) {
     case 0:
         return L"x2";
     case 1:
         return L"x4";
     case 2:
         return L"x8";
+    case 3:
+        return L"x16";
     default:
-        return L"Normal";
+        return L"x1";
     }
+}
+
+int details_panel_width_for_client_width(int client_width) {
+    return std::clamp(client_width / 3, 320, 370);
+}
+
+int minimum_video_width_for_controls() {
+    return 104 + 8 + 70 + 16 + 112 + 8 + 112;
+}
+
+int client_width_for_video_width(int video_width, bool details_visible) {
+    constexpr int padding = 14;
+    const int preserved_video_width = std::max(video_width, minimum_video_width_for_controls());
+    if (!details_visible) {
+        return preserved_video_width + padding * 2;
+    }
+
+    int details_width = 370;
+    int client_width = preserved_video_width + padding * 3 + details_width;
+    for (int i = 0; i < 6; ++i) {
+        details_width = details_panel_width_for_client_width(client_width);
+        client_width = preserved_video_width + padding * 3 + details_width;
+    }
+    return client_width;
 }
 
 double seconds_for_frame(std::uint64_t frame) {
@@ -1518,19 +1549,85 @@ void toggle_playback() {
 }
 
 void toggle_details() {
-    g_state.details_visible = !g_state.details_visible;
-    update_details_toggle_button();
-    layout_controls(g_state.hwnd);
-    if (g_state.hwnd) {
-        InvalidateRect(g_state.hwnd, nullptr, TRUE);
+    if (!g_state.hwnd) {
+        return;
     }
+
+    RECT client_rect = {};
+    RECT window_rect = {};
+    RECT video_rect = {};
+    GetClientRect(g_state.hwnd, &client_rect);
+    GetWindowRect(g_state.hwnd, &window_rect);
+    if (g_state.video_panel) {
+        GetWindowRect(g_state.video_panel, &video_rect);
+    }
+
+    const bool show_details = !g_state.details_visible;
+    const int current_video_width = g_state.video_panel
+        ? std::max(1, static_cast<int>(video_rect.right - video_rect.left))
+        : std::max(minimum_video_width_for_controls(), static_cast<int>(client_rect.right - client_rect.left) - 28);
+    const int target_client_width = client_width_for_video_width(current_video_width, show_details);
+    const int target_client_height = std::max(1, static_cast<int>(client_rect.bottom - client_rect.top));
+
+    RECT target_window = {0, 0, target_client_width, target_client_height};
+    const auto style = static_cast<DWORD>(GetWindowLongPtrW(g_state.hwnd, GWL_STYLE));
+    const auto ex_style = static_cast<DWORD>(GetWindowLongPtrW(g_state.hwnd, GWL_EXSTYLE));
+    AdjustWindowRectEx(&target_window, style, FALSE, ex_style);
+    int desired_width = target_window.right - target_window.left;
+    int desired_height = target_window.bottom - target_window.top;
+
+    HMONITOR monitor = MonitorFromWindow(g_state.hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitor_info = {};
+    monitor_info.cbSize = sizeof(monitor_info);
+    GetMonitorInfoW(monitor, &monitor_info);
+    const RECT work = monitor_info.rcWork;
+    const int work_width = work.right - work.left;
+    const int work_height = work.bottom - work.top;
+
+    bool clamped = false;
+    if (desired_width > work_width) {
+        desired_width = work_width;
+        clamped = true;
+    }
+    if (desired_height > work_height) {
+        desired_height = work_height;
+        clamped = true;
+    }
+
+    int x = window_rect.left;
+    int y = window_rect.top;
+    if (show_details && x + desired_width > work.right) {
+        x = work.right - desired_width;
+        clamped = true;
+    }
+    const int min_x = static_cast<int>(work.left);
+    const int min_y = static_cast<int>(work.top);
+    const int max_x = std::max(min_x, static_cast<int>(work.right) - desired_width);
+    const int max_y = std::max(min_y, static_cast<int>(work.bottom) - desired_height);
+    x = std::clamp(x, min_x, max_x);
+    y = std::clamp(y, min_y, max_y);
+
+    if (IsZoomed(g_state.hwnd)) {
+        ShowWindow(g_state.hwnd, SW_RESTORE);
+    }
+
+    g_state.details_visible = show_details;
+    update_details_toggle_button();
+    SetWindowPos(g_state.hwnd, nullptr, x, y, desired_width, desired_height, SWP_NOZORDER | SWP_NOACTIVATE);
+    layout_controls(g_state.hwnd);
+    InvalidateRect(g_state.hwnd, nullptr, TRUE);
     if (g_state.video_panel) {
         InvalidateRect(g_state.video_panel, nullptr, TRUE);
+    }
+    if (clamped && show_details) {
+        set_status(L"Details shown; window was fit to the available screen space.");
+    } else {
+        set_status(show_details ? L"Details shown." : L"Details hidden.");
     }
 }
 
 void cycle_playback_speed() {
-    const int next_index = (std::clamp(g_state.playback_speed_index.load(), 0, 3) + 1) % 4;
+    const int next_index = (std::clamp(g_state.playback_speed_index.load(), 0, 4) + 1) % 5;
     g_state.playback_speed_index.store(next_index);
     update_speed_button();
     update_info();
@@ -1575,8 +1672,7 @@ void resize_to_actual_size() {
             details_width = std::clamp(visible_client_width / 3, 320, 370);
         }
     }
-    const int controls_min_width = 104 + 8 + 70 + 16 + 112 + 8 + 112;
-    const int video_side_width = std::max(source_width, controls_min_width);
+    const int video_side_width = std::max(source_width, minimum_video_width_for_controls());
     const int client_width = video_side_width + padding * 2 + (g_state.details_visible ? padding + details_width : 0);
     const int client_height = content_top + source_height + timeline_height + controls_height + 16 + content_bottom_margin;
 
@@ -1644,8 +1740,8 @@ void layout_controls(HWND hwnd) {
     const int content_top = file_top + file_row_height + 14;
     const int status_top = rect.bottom - status_height - 6;
     const int content_bottom = status_top - 10;
-    const int details_width = g_state.details_visible ? std::clamp(width / 3, 320, 370) : 0;
-    const int controls_min_width = play_button_width + 8 + speed_button_width + 16 + details_toggle_button_width + 8 + actual_size_button_width;
+    const int details_width = g_state.details_visible ? details_panel_width_for_client_width(width) : 0;
+    const int controls_min_width = minimum_video_width_for_controls();
     const int video_width = std::max(controls_min_width, width - padding * 2 - (g_state.details_visible ? padding + details_width : 0));
     const int content_height = std::max(220, content_bottom - content_top);
     const int controls_height = button_height + 8;
