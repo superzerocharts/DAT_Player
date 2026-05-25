@@ -1255,11 +1255,11 @@ std::wstring build_info_text() {
         } else {
             text << L"Archive display: unavailable";
             if (!metadata.sidecar.available) {
-                text << L" (timezone sidecar not found)";
+                text << L" (timezone data not found)";
             } else if (!metadata.sidecar.has_display_offset_minutes) {
                 text << L" (timezone/offset not found)";
             } else {
-                text << L" (timezone sidecar not trusted for DAT ticks)";
+                text << L" (timezone data not trusted for DAT ticks)";
             }
             text << L"\r\n";
         }
