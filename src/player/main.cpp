@@ -54,6 +54,8 @@ constexpr UINT kPreviewFrameMessage = WM_APP + 4;
 constexpr UINT kPreviewFinishedMessage = WM_APP + 5;
 constexpr UINT_PTR kTimelinePreviewTimerId = 42;
 constexpr int kTrackbarMax = 10000;
+constexpr int kDefaultWindowWidth = 689;
+constexpr int kDefaultWindowHeight = 584;
 constexpr auto kPreviewThrottle = std::chrono::milliseconds(200);
 constexpr auto kDiagnosticsUpdateThrottle = std::chrono::milliseconds(500);
 
@@ -181,6 +183,7 @@ struct PlayerState {
     bool seeking = false;
     bool playing = false;
     bool details_visible = false;
+    bool actual_size_applied = false;
 };
 
 PlayerState g_state;
@@ -753,6 +756,12 @@ void update_speed_button() {
     if (g_state.speed_button) {
         const auto text = next_speed_button_text();
         SetWindowTextW(g_state.speed_button, text.c_str());
+    }
+}
+
+void update_actual_size_button() {
+    if (g_state.actual_size_button) {
+        SetWindowTextW(g_state.actual_size_button, g_state.actual_size_applied ? L"Default Size" : L"Actual Size");
     }
 }
 
@@ -1385,6 +1394,8 @@ void reset_loaded_state() {
     g_state.thumb_time_label_rect = {};
     g_state.has_thumb_time_label_rect = false;
     g_state.displayed_thumb_time_text.clear();
+    g_state.actual_size_applied = false;
+    update_actual_size_button();
     set_enabled_after_load(false);
     if (g_state.video_panel) {
         InvalidateRect(g_state.video_panel, nullptr, TRUE);
@@ -1479,6 +1490,8 @@ bool load_dat_path(HWND owner, const std::filesystem::path& path, bool dropped_f
         g_state.thumb_time_label_rect = {};
         g_state.has_thumb_time_label_rect = false;
         g_state.displayed_thumb_time_text.clear();
+        g_state.actual_size_applied = false;
+        update_actual_size_button();
         set_enabled_after_load(!g_state.index.frames.empty());
         if (g_state.video_panel) {
             InvalidateRect(g_state.video_panel, nullptr, TRUE);
@@ -2189,9 +2202,9 @@ void cycle_playback_speed() {
     set_status(status.str());
 }
 
-void resize_to_actual_size() {
+bool resize_to_actual_size() {
     if (!g_state.hwnd || g_state.index.frames.empty()) {
-        return;
+        return false;
     }
 
     const auto& first_frame = g_state.index.frames.front();
@@ -2199,7 +2212,7 @@ void resize_to_actual_size() {
     const int source_height = static_cast<int>(first_frame.height);
     if (source_width <= 0 || source_height <= 0) {
         set_status(L"Actual Size is unavailable because no source resolution was detected.");
-        return;
+        return false;
     }
 
     const int padding = 14;
@@ -2259,6 +2272,43 @@ void resize_to_actual_size() {
         status << L"Actual Size applied: video panel target " << source_width << L" x " << source_height << L".";
         set_status(status.str());
     }
+    return true;
+}
+
+bool resize_to_default_size() {
+    if (!g_state.hwnd) {
+        return false;
+    }
+
+    HMONITOR monitor = MonitorFromWindow(g_state.hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitor_info = {};
+    monitor_info.cbSize = sizeof(monitor_info);
+    GetMonitorInfoW(monitor, &monitor_info);
+    const RECT work = monitor_info.rcWork;
+    const int work_width = work.right - work.left;
+    const int work_height = work.bottom - work.top;
+
+    const int desired_width = std::min(kDefaultWindowWidth, work_width);
+    const int desired_height = std::min(kDefaultWindowHeight, work_height);
+    const int x = work.left + std::max(0, (work_width - desired_width) / 2);
+    const int y = work.top + std::max(0, (work_height - desired_height) / 2);
+
+    if (IsZoomed(g_state.hwnd)) {
+        ShowWindow(g_state.hwnd, SW_RESTORE);
+    }
+    SetWindowPos(g_state.hwnd, nullptr, x, y, desired_width, desired_height, SWP_NOZORDER | SWP_NOACTIVATE);
+    set_status(L"Default Size applied.");
+    return true;
+}
+
+void toggle_actual_size() {
+    const bool resized = g_state.actual_size_applied ? resize_to_default_size() : resize_to_actual_size();
+    if (!resized) {
+        return;
+    }
+
+    g_state.actual_size_applied = !g_state.actual_size_applied;
+    update_actual_size_button();
 }
 
 void apply_default_font(HWND control) {
@@ -2340,6 +2390,7 @@ void layout_controls(HWND hwnd) {
     ShowWindow(g_state.info_label, g_state.details_visible ? SW_SHOW : SW_HIDE);
     ShowWindow(g_state.decode_smoke_button, g_state.details_visible ? SW_SHOW : SW_HIDE);
     ShowWindow(g_state.render_first_frame_button, g_state.details_visible ? SW_SHOW : SW_HIDE);
+    update_actual_size_button();
     update_details_toggle_button();
     update_speed_button();
     MoveWindow(g_state.status_label, padding, status_top, width - padding * 2, status_height, TRUE);
@@ -2482,7 +2533,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             cycle_playback_speed();
             return 0;
         case kActualSizeButtonId:
-            resize_to_actual_size();
+            toggle_actual_size();
             return 0;
         case kDetailsToggleButtonId:
             toggle_details();
@@ -2848,8 +2899,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        689,
-        584,
+        kDefaultWindowWidth,
+        kDefaultWindowHeight,
         nullptr,
         nullptr,
         instance,
