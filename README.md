@@ -12,7 +12,7 @@ and Media Foundation.
 
 - Read-only DAT indexing for `H264` and `I264` frame records
 - Read-only recording-time metadata extraction from DAT frame ticks and optional
-  `.sef2` sidecar XML
+  `.sef2` metadata XML
 - Media Foundation H.264 decode path
 - Cropped NV12-to-BGRA rendering for padded decoder output such as `1920 x 1088`
   displayed as the indexed/source size such as `1920 x 1080`
@@ -27,7 +27,7 @@ and Media Foundation.
 DAT Player still plays only compatible `.dat` files in this phase. It does not
 play `.mp4`, `.mkv`, `.avi`, `.sef`, `.sef2`, arbitrary video files, audio, or
 conversion outputs. Optional `.sef2` files are inspected only as read-only
-metadata sidecars.
+metadata files.
 
 ## Project Layout
 
@@ -138,8 +138,8 @@ Rendered BGRA output can be dumped to a BMP for visual inspection:
 - True recording timestamp timebase is `10,000,000` ticks per second
 - Legacy fallback timestamp timebase is `39062.5` units per second
 
-Optional `.sef2` sidecars can provide recording start/end, camera, device, and
-timezone/display-offset metadata. The player does not require sidecars and does
-not modify source DAT or sidecar files. When only DAT frame ticks are available,
+Optional `.sef2` metadata files can provide recording start/end, camera, device,
+and timezone/display-offset metadata. The player does not require these files
+and does not modify source DAT or metadata files. When only DAT frame ticks are available,
 Details can show the raw unadjusted DAT timestamps, but the main timeline stays
 on elapsed time to avoid implying archive-local wall-clock accuracy.

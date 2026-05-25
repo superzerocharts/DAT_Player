@@ -80,7 +80,7 @@ the synthetic parser edge cases.
 
 ## Optional Sample Smoke Tests
 
-Use any compatible local Mirasys/Spotter-style DAT sample. This example path is
+Use any compatible local DAT sample from a supported recording export. This example path is
 local to one development machine and is not required by the repository:
 
 ```powershell

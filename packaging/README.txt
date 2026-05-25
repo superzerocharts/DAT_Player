@@ -1,6 +1,6 @@
 DAT Player
 
-DAT Player is a small portable viewer for compatible Mirasys/Spotter .dat video files.
+DAT Player is a small portable viewer for compatible .dat video files exported by supported recording software.
 
 How to use:
 1. Run DatPlayer.exe.
@@ -13,13 +13,13 @@ How to use:
 8. Use Show Details only if you need technical file or metadata information.
 
 Recording time:
-If matching Mirasys sidecar metadata is available, the timeline shows the original recording date/time. If that metadata is not available, the player falls back to elapsed video time.
+If matching recording data is available, the timeline shows the original recording date/time. If that data is not available, the player falls back to elapsed video time.
 
 Notes:
-- DAT Player only supports compatible Mirasys/Spotter .dat video files.
+- DAT Player only supports compatible .dat video files from supported recording exports.
 - It is not a general media player.
 - It does not modify, overwrite, or delete source video files.
-- Keep the .sef2 and other export sidecar files with the .dat when possible for the most accurate recording time display.
+- Keep the .sef2 and other export data files with the .dat when possible for the most accurate recording time display.
 
 Files in this package:
 - DatPlayer.exe
