@@ -2315,10 +2315,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             }
             update_info();
             std::wostringstream status;
-            status << L"Playing frame " << (g_state.current_frame + 1) << L" / " << frame_count()
-                   << L" decoded=" << g_state.frames_decoded
-                   << L" rendered=" << g_state.frames_rendered
-                   << L" Speed: " << playback_speed_label();
+            status << L"Speed: " << playback_speed_label() << L" while playing.";
             set_status(status.str());
         }
         return 0;
