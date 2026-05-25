@@ -53,11 +53,13 @@ constexpr UINT kSeekFinishedMessage = WM_APP + 3;
 constexpr UINT kPreviewFrameMessage = WM_APP + 4;
 constexpr UINT kPreviewFinishedMessage = WM_APP + 5;
 constexpr UINT_PTR kTimelinePreviewTimerId = 42;
+constexpr UINT_PTR kResizeRefreshTimerId = 43;
 constexpr int kTrackbarMax = 10000;
 constexpr int kDefaultWindowWidth = 689;
 constexpr int kDefaultWindowHeight = 584;
 constexpr auto kPreviewThrottle = std::chrono::milliseconds(200);
 constexpr auto kDiagnosticsUpdateThrottle = std::chrono::milliseconds(500);
+constexpr auto kResizeRefreshDelay = std::chrono::milliseconds(90);
 
 struct UiPlaybackFrame {
     dat_player::playback::BgraVideoFrame frame;
@@ -184,6 +186,7 @@ struct PlayerState {
     bool playing = false;
     bool details_visible = false;
     bool actual_size_applied = false;
+    bool live_resizing = false;
 };
 
 PlayerState g_state;
@@ -765,6 +768,33 @@ void update_actual_size_button() {
     }
 }
 
+void refresh_after_resize() {
+    if (g_state.video_panel) {
+        RedrawWindow(
+            g_state.video_panel,
+            nullptr,
+            nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
+    }
+    if (g_state.hwnd) {
+        RedrawWindow(
+            g_state.hwnd,
+            nullptr,
+            nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    }
+}
+
+void arm_resize_refresh() {
+    if (g_state.hwnd) {
+        SetTimer(
+            g_state.hwnd,
+            kResizeRefreshTimerId,
+            static_cast<UINT>(kResizeRefreshDelay.count()),
+            nullptr);
+    }
+}
+
 void stop_playback() {
     g_state.stop_playback_requested = true;
     ++g_state.playback_generation;
@@ -1105,6 +1135,10 @@ LRESULT CALLBACK video_panel_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM
     switch (message) {
     case WM_ERASEBKGND:
         return 1;
+
+    case WM_SIZE:
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
 
     case WM_DROPFILES:
         handle_drop_files(g_state.hwnd ? g_state.hwnd : hwnd, reinterpret_cast<HDROP>(wparam));
@@ -2450,7 +2484,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTotalTimeLabelId)), nullptr, nullptr);
         g_state.thumb_time_label = CreateWindowW(L"STATIC", L"00:00", WS_CHILD | WS_VISIBLE | SS_CENTER,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThumbTimeLabelId)), nullptr, nullptr);
-        g_state.video_panel = CreateWindowW(L"DATVideoPanel", L"", WS_CHILD | WS_VISIBLE | WS_BORDER,
+        g_state.video_panel = CreateWindowW(L"DATVideoPanel", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | WS_CLIPSIBLINGS,
             0, 0, 0, 0, hwnd, nullptr, nullptr, nullptr);
         DragAcceptFiles(hwnd, TRUE);
         DragAcceptFiles(g_state.video_panel, TRUE);
@@ -2485,8 +2519,23 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         layout_controls(hwnd);
         return 0;
 
+    case WM_ENTERSIZEMOVE:
+        g_state.live_resizing = true;
+        return 0;
+
+    case WM_EXITSIZEMOVE:
+        g_state.live_resizing = false;
+        KillTimer(hwnd, kResizeRefreshTimerId);
+        layout_controls(hwnd);
+        refresh_after_resize();
+        return 0;
+
     case WM_SIZE:
         layout_controls(hwnd);
+        if (g_state.video_panel) {
+            InvalidateRect(g_state.video_panel, nullptr, FALSE);
+        }
+        arm_resize_refresh();
         return 0;
 
     case WM_CTLCOLORSTATIC: {
@@ -2624,6 +2673,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             g_state.preview_timer_armed = false;
             if (g_state.timeline_dragging && g_state.has_timeline_preview && !g_state.preview_in_flight) {
                 start_preview_to_frame(g_state.latest_preview_frame);
+            }
+            return 0;
+        }
+        if (wparam == kResizeRefreshTimerId) {
+            KillTimer(hwnd, kResizeRefreshTimerId);
+            if (!g_state.live_resizing) {
+                refresh_after_resize();
             }
             return 0;
         }
@@ -2842,6 +2898,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     const wchar_t class_name[] = L"DATPlayerShellWindow";
     WNDCLASSEXW window_class = {};
     window_class.cbSize = sizeof(window_class);
+    window_class.style = CS_HREDRAW | CS_VREDRAW;
     window_class.lpfnWndProc = window_proc;
     window_class.hInstance = instance;
     window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -2878,6 +2935,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     WNDCLASSEXW video_class = {};
     video_class.cbSize = sizeof(video_class);
+    video_class.style = CS_HREDRAW | CS_VREDRAW;
     video_class.lpfnWndProc = video_panel_proc;
     video_class.hInstance = instance;
     video_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -2896,7 +2954,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         0,
         class_name,
         L"DAT Player",
-        WS_OVERLAPPEDWINDOW,
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         kDefaultWindowWidth,
