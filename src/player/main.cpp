@@ -2385,7 +2385,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             0, 0, 0, 0, hwnd, nullptr, nullptr, nullptr);
         DragAcceptFiles(hwnd, TRUE);
         DragAcceptFiles(g_state.video_panel, TRUE);
-        g_state.info_label = CreateWindowW(L"STATIC", L"", WS_CHILD | SS_LEFT,
+        g_state.info_label = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_CHILD | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kInfoLabelId)), nullptr, nullptr);
         g_state.status_label = CreateWindowW(L"STATIC", L"Ready. Open a compatible .dat file to begin.", WS_CHILD | WS_VISIBLE | SS_LEFT,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabelId)), nullptr, nullptr);
@@ -2406,6 +2407,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         apply_default_font(g_state.thumb_time_label);
         apply_default_font(g_state.info_label);
         apply_default_font(g_state.status_label);
+        SendMessageW(g_state.info_label, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(6, 6));
 
         SendMessageW(g_state.timeline, TBM_SETRANGE, TRUE, MAKELPARAM(0, kTrackbarMax));
         SendMessageW(g_state.timeline, TBM_SETPAGESIZE, 0, 500);
