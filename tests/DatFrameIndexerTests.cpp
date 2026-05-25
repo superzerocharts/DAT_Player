@@ -17,6 +17,7 @@ using dat_player::DatFrameIndexer;
 using dat_player::DatFrameType;
 using dat_player::DatIndexOptions;
 using dat_player::RecordingMetadataConfidence;
+using dat_player::Sef2SignatureStatus;
 
 struct TestFailure : std::runtime_error {
     using std::runtime_error::runtime_error;
@@ -351,9 +352,36 @@ void write_binary_file(const std::filesystem::path& path, const std::vector<unsi
     output.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
 }
 
+void write_sparse_file(const std::filesystem::path& path, std::uint64_t size) {
+    std::ofstream output(path, std::ios::binary);
+    if (size > 0) {
+        output.seekp(static_cast<std::streamoff>(size - 1));
+        output.put('\0');
+    }
+}
+
 void write_text_file(const std::filesystem::path& path, const std::string& text) {
     std::ofstream output(path, std::ios::binary);
     output << text;
+}
+
+std::filesystem::path fixture_path(const std::filesystem::path& relative_path) {
+#ifdef DAT_PLAYER_SOURCE_DIR
+    return std::filesystem::path(DAT_PLAYER_SOURCE_DIR) / "tests" / "fixtures" / relative_path;
+#else
+    return std::filesystem::current_path() / "tests" / "fixtures" / relative_path;
+#endif
+}
+
+void copy_file_or_throw(const std::filesystem::path& source, const std::filesystem::path& destination) {
+    std::error_code ec;
+    std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing, ec);
+    require(!ec, "failed to copy test fixture");
+}
+
+std::string signature_debug_text(const dat_player::RecordingSidecarMetadata& metadata) {
+    return "status=" + dat_player::to_string(metadata.signature_status) +
+        " error=" + metadata.verification_error;
 }
 
 void dat_ticks_matching_sef2_are_high_confidence() {
@@ -417,6 +445,84 @@ void sef2_only_metadata_is_medium_confidence() {
     std::filesystem::remove_all(dir);
 }
 
+void valid_original_sef2_signature_passes() {
+    auto metadata = dat_player::parse_sef2_metadata_file(fixture_path("sef2/valid_camera_205.sef2"));
+    require(metadata.signature_status == Sef2SignatureStatus::Pending, "signed .sef2 should be pending before explicit verification");
+    dat_player::verify_sef2_signature(metadata);
+
+    require(metadata.available, "valid .sef2 fixture should parse");
+    require(metadata.signature_status == Sef2SignatureStatus::Valid, "known-good .sef2 signature should be valid: " + signature_debug_text(metadata));
+    require(metadata.has_signature, "known-good .sef2 should contain a signature");
+    require(metadata.signature_method == "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256", "signature method mismatch");
+    require(metadata.digest_method == "http://www.w3.org/2001/04/xmlenc#sha256", "digest method mismatch");
+    require(metadata.public_key_source.find("embedded SEF2 signing public key") != std::string::npos,
+        "public key source should identify embedded public key");
+    require(metadata.verification_error.empty(), "valid signature should not report an exception");
+}
+
+void modified_start_timestamp_sef2_signature_fails() {
+    auto metadata = dat_player::parse_sef2_metadata_file(fixture_path("sef2/modified_start_camera_205.sef2"));
+    dat_player::verify_sef2_signature(metadata);
+
+    require(metadata.available, "modified .sef2 fixture should parse");
+    require(metadata.signature_status == Sef2SignatureStatus::Invalid, "modified signed metadata should fail signature verification: " + signature_debug_text(metadata));
+}
+
+void missing_signature_returns_missing_signature() {
+    const auto metadata = dat_player::parse_sef2_metadata_file(fixture_path("sef2/missing_signature_camera_205.sef2"));
+
+    require(metadata.available, "unsigned .sef2 fixture should parse");
+    require(metadata.signature_status == Sef2SignatureStatus::MissingSignature, "missing XMLDSIG signature should be reported: " + signature_debug_text(metadata));
+    require(!metadata.has_signature, "missing-signature fixture should not report a signature");
+}
+
+void dat_only_sidecar_lookup_is_not_available() {
+    const auto dir = unique_temp_dir();
+    const auto dat_path = dir / "clip.dat";
+    write_binary_file(dat_path, std::vector<unsigned char>{0x01, 0x02, 0x03});
+
+    const auto metadata = dat_player::try_load_sef2_sidecar(dat_path);
+
+    require(!metadata.available, "DAT-only sidecar lookup should not require metadata");
+    require(metadata.signature_status == Sef2SignatureStatus::NotAvailable, "DAT-only signature status should be not available");
+    std::filesystem::remove_all(dir);
+}
+
+void sidecar_referencing_selected_dat_is_matched() {
+    const auto dir = unique_temp_dir();
+    const auto dat_path = dir / "dvrfile00000001.dat";
+    write_sparse_file(dat_path, 194760704);
+    copy_file_or_throw(fixture_path("sef2/valid_camera_205.sef2"), dir / "Camera 205 Sample.sef2");
+
+    auto metadata = dat_player::try_load_sef2_sidecar(dat_path);
+
+    require(metadata.available, "expected matching .sef2 sidecar");
+    require(metadata.sidecar_references_selected_dat, "sidecar should match selected DAT filename");
+    require(!metadata.references_different_dat, "matching sidecar should not warn about different DAT");
+    require(metadata.referenced_dat_exists, "referenced DAT should exist");
+    require(metadata.has_data_size_bytes, "channel data size should be parsed");
+    require(metadata.dat_size_plausible, "selected DAT should be plausible against channel data size");
+    require(metadata.signature_status == Sef2SignatureStatus::Pending, "matched sidecar should be pending before explicit verification");
+    dat_player::verify_sef2_signature(metadata);
+    require(metadata.signature_status == Sef2SignatureStatus::Valid, "matched sidecar should verify: " + signature_debug_text(metadata));
+    std::filesystem::remove_all(dir);
+}
+
+void sidecar_referencing_different_dat_warns() {
+    const auto dir = unique_temp_dir();
+    const auto dat_path = dir / "other.dat";
+    write_binary_file(dat_path, std::vector<unsigned char>(128, 0x5a));
+    copy_file_or_throw(fixture_path("sef2/valid_camera_205.sef2"), dir / "Camera 205 Sample.sef2");
+
+    const auto metadata = dat_player::try_load_sef2_sidecar(dat_path);
+
+    require(metadata.available, "expected nonmatching .sef2 sidecar to be loaded");
+    require(metadata.references_different_dat, "sidecar should warn when it references a different DAT");
+    require(!metadata.sidecar_references_selected_dat, "sidecar should not match selected DAT filename");
+    require(!metadata.integrity_warnings.empty(), "nonmatching sidecar should produce a warning");
+    std::filesystem::remove_all(dir);
+}
+
 void final_buffer_boundary_is_scanned() {
     std::vector<unsigned char> data;
     append_record(data, "H264", 1000, 320, 240, 8);
@@ -463,6 +569,12 @@ int main() {
     failures += run_test("dat_ticks_matching_sef2_are_high_confidence", dat_ticks_matching_sef2_are_high_confidence);
     failures += run_test("mismatched_sef2_keeps_dat_metadata_source", mismatched_sef2_keeps_dat_metadata_source);
     failures += run_test("sef2_only_metadata_is_medium_confidence", sef2_only_metadata_is_medium_confidence);
+    failures += run_test("valid_original_sef2_signature_passes", valid_original_sef2_signature_passes);
+    failures += run_test("modified_start_timestamp_sef2_signature_fails", modified_start_timestamp_sef2_signature_fails);
+    failures += run_test("missing_signature_returns_missing_signature", missing_signature_returns_missing_signature);
+    failures += run_test("dat_only_sidecar_lookup_is_not_available", dat_only_sidecar_lookup_is_not_available);
+    failures += run_test("sidecar_referencing_selected_dat_is_matched", sidecar_referencing_selected_dat_is_matched);
+    failures += run_test("sidecar_referencing_different_dat_warns", sidecar_referencing_different_dat_warns);
     failures += run_test("final_buffer_boundary_is_scanned", final_buffer_boundary_is_scanned);
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

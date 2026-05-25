@@ -1,0 +1,31 @@
+<archive2 xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <start>2026-05-20T04:25:17.5410000</start>
+  <end>2026-05-20T04:30:14.7380000</end>
+  <password>Lm5xfw4ViXkwCxPOFHur5g==</password>
+  <key />
+  <LayoutData>
+    <layoutdata>
+      <node id="Camera16" data="&lt;Video ProfileNodeId=&quot;b67e9710-2db3-4d0f-9848-47407a591c5c&quot; IsVisible=&quot;true&quot; IsMaximized=&quot;true&quot; AspectRatio=&quot;0.5625&quot;&gt;&#xD;&#xA;  &lt;Stream Number=&quot;0&quot; UpdateMode=&quot;Continuous&quot; UpdateInterval=&quot;1&quot; ThruCastStatus=&quot;AlwaysFromRecorder&quot; /&gt;&#xD;&#xA;  &lt;ToolPluginCameraPrivacy PrivacyZones=&quot;true&quot; ObjectMasking=&quot;true&quot; /&gt;&#xD;&#xA;  &lt;ImageControlsPlugin Brightness=&quot;0&quot; Contrast=&quot;0&quot; IsBlackAndWhite=&quot;false&quot; IsFlipped=&quot;false&quot; IsMirrored=&quot;false&quot; UseDeinterlaceFilter=&quot;false&quot; UseEdgeFilter=&quot;false&quot; UseHistogramEqualizationFilter=&quot;false&quot; UseNoiseFilter=&quot;false&quot; UseSharpenFilter=&quot;false&quot; AreColorsInverted=&quot;false&quot; /&gt;&#xD;&#xA;  &lt;ToolPluginVcaVisualization DrawBoundingBox=&quot;false&quot; DrawTrail=&quot;false&quot; DrawZones=&quot;false&quot; DrawLines=&quot;false&quot; DrawCounters=&quot;false&quot; DrawInfoTexts=&quot;false&quot; DrawLicensePlates=&quot;false&quot; DrawFaces=&quot;false&quot; /&gt;&#xD;&#xA;  &lt;ZoomPlugin IsZoomOn=&quot;false&quot; X=&quot;0&quot; Y=&quot;0&quot; Width=&quot;1&quot; Height=&quot;1&quot; AutoZoomOn=&quot;false&quot; AutoZoomOnWholeArea=&quot;false&quot; AutoCropOn=&quot;false&quot; AutoCropIsZoomOn=&quot;false&quot; AutoCropX=&quot;0&quot; AutoCropY=&quot;0&quot; AutoCropWidth=&quot;1&quot; AutoCropHeight=&quot;1&quot; /&gt;&#xD;&#xA;&lt;/Video&gt;" />
+    </layoutdata>
+  </LayoutData>
+  <files>
+    <file name="dvrfile00000001.dat" hash="194760705" />
+  </files>
+  <channels>
+    <channel dataType="Video" channelId="16" channelType="Material" dataSize="193307677" is360="false" name="MjA1IENob2tlIFBvaW50" manufacturer="AXIS" model="AXIS Q1645 Network Camera" timezone="AAEAAAD/////AQAAAAAAAAAEAQAAABxTeXN0ZW0uQ3VycmVudFN5c3RlbVRpbWVab25lBAAAABdtX0NhY2hlZERheWxpZ2h0Q2hhbmdlcw1tX3RpY2tzT2Zmc2V0Dm1fc3RhbmRhcmROYW1lDm1fZGF5bGlnaHROYW1lAwABARxTeXN0ZW0uQ29sbGVjdGlvbnMuSGFzaHRhYmxlCQkCAAAAAMDc8bz///8KCgQCAAAAHFN5c3RlbS5Db2xsZWN0aW9ucy5IYXNodGFibGUHAAAACkxvYWRGYWN0b3IHVmVyc2lvbghDb21wYXJlchBIYXNoQ29kZVByb3ZpZGVyCEhhc2hTaXplBEtleXMGVmFsdWVzAAADAwAFBQsIHFN5c3RlbS5Db2xsZWN0aW9ucy5JQ29tcGFyZXIkU3lzdGVtLkNvbGxlY3Rpb25zLklIYXNoQ29kZVByb3ZpZGVyCOxROD8BAAAACgoDAAAACQMAAAAJBAAAABADAAAAAQAAAAgI6gcAABAEAAAAAQAAAAkFAAAABAUAAAAhU3lzdGVtLkdsb2JhbGl6YXRpb24uRGF5bGlnaHRUaW1lAwAAAAdtX3N0YXJ0BW1fZW5kB21fZGVsdGEAAAANDQwAUMRntnzeiADQFNa7N9+IAGjEYQgAAAALAAAAAAAAAAAAAAA=" privacy="&lt;Privacy Maskings=&quot;0&quot; /&gt;" />
+  </channels>
+  <Signature xmlns="http://www.w3.org/2000/09/xmldsig#">
+    <SignedInfo>
+      <CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315" />
+      <SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256" />
+      <Reference URI="">
+        <Transforms>
+          <Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature" />
+        </Transforms>
+        <DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" />
+        <DigestValue>2rWYkrLPiXSXpu0yv2RXYHc7ah7fzuodOVbYqVObhOw=</DigestValue>
+      </Reference>
+    </SignedInfo>
+    <SignatureValue>m1XcZ/jWqI7uL1N4UwsDZlG8+0QsddzmnvyCqISyJq3EK5IrDEuCWgrayUqxEeWK55W8DJkMEWNr0OWKXVeuS3Av564dYqYtAj5IddGl+YuOmoBr4ux6ONuCSFYi78XMSFAK6l9gCeRKgF/mMNzBtX7hS31r3IY2bdMX6JcbEmo=</SignatureValue>
+  </Signature>
+</archive2>

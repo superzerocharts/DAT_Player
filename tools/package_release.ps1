@@ -10,6 +10,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $buildRoot = Join-Path $repoRoot $BuildDir
 $exePath = Join-Path $buildRoot (Join-Path $Configuration "DatPlayer.exe")
+$sef2VerifierPath = Join-Path $buildRoot (Join-Path $Configuration "DatPlayer.Sef2SignatureVerifier.exe")
 $readmePath = Join-Path $repoRoot "packaging\README.txt"
 $distPath = Join-Path $repoRoot $DistDir
 $distParent = Split-Path -Parent $distPath
@@ -38,6 +39,11 @@ if (Test-Path -LiteralPath $fullDistPath) {
 New-Item -ItemType Directory -Path $fullDistPath | Out-Null
 
 Copy-Item -LiteralPath $exePath -Destination (Join-Path $fullDistPath "DatPlayer.exe")
+if (Test-Path -LiteralPath $sef2VerifierPath -PathType Leaf) {
+    Copy-Item -LiteralPath $sef2VerifierPath -Destination (Join-Path $fullDistPath "DatPlayer.Sef2SignatureVerifier.exe")
+} else {
+    Write-Warning "SEF2 signature verifier helper was not found at '$sef2VerifierPath'. Signature status will be Not available in the packaged app."
+}
 Copy-Item -LiteralPath $readmePath -Destination (Join-Path $fullDistPath "README.txt")
 
 $unexpectedLocalDlls = Get-ChildItem -LiteralPath $fullDistPath -Filter *.dll -File -ErrorAction SilentlyContinue

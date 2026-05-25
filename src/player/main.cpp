@@ -21,6 +21,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -52,6 +53,7 @@ constexpr UINT kPlaybackFinishedMessage = WM_APP + 2;
 constexpr UINT kSeekFinishedMessage = WM_APP + 3;
 constexpr UINT kPreviewFrameMessage = WM_APP + 4;
 constexpr UINT kPreviewFinishedMessage = WM_APP + 5;
+constexpr UINT kIntegrityFinishedMessage = WM_APP + 6;
 constexpr UINT_PTR kTimelinePreviewTimerId = 42;
 constexpr UINT_PTR kResizeRefreshTimerId = 43;
 constexpr int kTrackbarMax = 10000;
@@ -104,6 +106,12 @@ struct PreviewFinishedMessage {
     std::wstring text;
 };
 
+struct IntegrityFinishedMessage {
+    std::uint64_t generation = 0;
+    std::wstring cache_key;
+    dat_player::RecordingSidecarMetadata sidecar{};
+};
+
 struct PlayerState {
     HWND hwnd = nullptr;
     HWND open_button = nullptr;
@@ -141,6 +149,8 @@ struct PlayerState {
     std::atomic<std::uint64_t> playback_timing_generation = 0;
     std::atomic<std::uint64_t> playback_generation = 0;
     std::atomic<std::uint64_t> preview_generation = 0;
+    std::atomic<std::uint64_t> integrity_generation = 0;
+    std::map<std::wstring, dat_player::RecordingSidecarMetadata> integrity_cache;
     std::uint64_t frames_rendered = 0;
     std::uint64_t frames_decoded = 0;
     std::uint64_t late_frames = 0;
@@ -194,6 +204,7 @@ PlayerState g_state;
 void start_forward_playback();
 void handle_drop_files(HWND hwnd, HDROP drop);
 void layout_controls(HWND hwnd);
+void update_info(bool force = false);
 
 std::wstring widen(const std::string& value) {
     if (value.empty()) {
@@ -680,6 +691,31 @@ std::wstring metadata_source_label(const dat_player::RecordingMetadata& metadata
     return L"none";
 }
 
+std::wstring integrity_cache_key(const dat_player::RecordingSidecarMetadata& sidecar) {
+    if (!sidecar.available || sidecar.path.empty()) {
+        return L"";
+    }
+
+    std::error_code ec;
+    const auto file_size = std::filesystem::file_size(sidecar.path, ec);
+    if (ec) {
+        return sidecar.path.wstring();
+    }
+    const auto write_time = std::filesystem::last_write_time(sidecar.path, ec);
+    const auto write_ticks = ec ? 0 : write_time.time_since_epoch().count();
+    std::wostringstream key;
+    key << sidecar.path.wstring() << L"|" << file_size << L"|" << write_ticks;
+    return key.str();
+}
+
+std::wstring sef2_signature_label(const dat_player::RecordingSidecarMetadata& sidecar) {
+    return widen(dat_player::to_string(sidecar.signature_status));
+}
+
+std::wstring video_authenticity_label(const dat_player::RecordingSidecarMetadata& sidecar) {
+    return sidecar.available ? L"Not fully verified" : L"Not checked";
+}
+
 std::wstring format_offset_minutes(int minutes) {
     const int magnitude = std::abs(minutes);
     std::wostringstream text;
@@ -766,6 +802,42 @@ void update_actual_size_button() {
     if (g_state.actual_size_button) {
         SetWindowTextW(g_state.actual_size_button, g_state.actual_size_applied ? L"Default Size" : L"Actual Size");
     }
+}
+
+void start_integrity_verification_if_needed() {
+    if (!g_state.hwnd) {
+        return;
+    }
+
+    auto& sidecar = g_state.index.summary.recording_metadata.sidecar;
+    if (!sidecar.available || sidecar.path.empty() ||
+        sidecar.signature_status != dat_player::Sef2SignatureStatus::Pending) {
+        return;
+    }
+
+    const auto cache_key = integrity_cache_key(sidecar);
+    if (!cache_key.empty()) {
+        const auto cached = g_state.integrity_cache.find(cache_key);
+        if (cached != g_state.integrity_cache.end()) {
+            sidecar = cached->second;
+            update_info(true);
+            return;
+        }
+    }
+
+    const auto generation = ++g_state.integrity_generation;
+    const HWND hwnd = g_state.hwnd;
+    auto sidecar_copy = sidecar;
+    std::thread([hwnd, generation, cache_key, sidecar_copy = std::move(sidecar_copy)]() mutable {
+        dat_player::verify_sef2_signature(sidecar_copy);
+        auto* message = new IntegrityFinishedMessage;
+        message->generation = generation;
+        message->cache_key = cache_key;
+        message->sidecar = std::move(sidecar_copy);
+        if (!PostMessageW(hwnd, kIntegrityFinishedMessage, 0, reinterpret_cast<LPARAM>(message))) {
+            delete message;
+        }
+    }).detach();
 }
 
 void refresh_after_resize() {
@@ -1234,6 +1306,44 @@ std::wstring build_info_text() {
          << L"Interframes: " << interframes << L"\r\n"
          << L"Timeline frame: " << (g_state.current_frame + 1) << L" / " << total;
     const auto& metadata = g_state.index.summary.recording_metadata;
+    const auto& sidecar = metadata.sidecar;
+    text << L"\r\n\r\nIntegrity:\r\n"
+         << L"Integrity metadata: " << (sidecar.available ? L"Present" : L"Not found") << L"\r\n"
+         << L"SEF2 signature: " << sef2_signature_label(sidecar) << L"\r\n"
+         << L"Video authenticity: " << video_authenticity_label(sidecar) << L"\r\n";
+    if (sidecar.available) {
+        if (!sidecar.path.empty()) {
+            text << L"Metadata path: " << sidecar.path.wstring() << L"\r\n";
+        }
+        if (!sidecar.referenced_dat_filename.empty()) {
+            text << L"Referenced DAT: " << widen(sidecar.referenced_dat_filename)
+                 << (sidecar.sidecar_references_selected_dat ? L" (matches selected file)" : L" (does not match selected file)")
+                 << L"\r\n";
+            text << L"Referenced DAT exists: " << (sidecar.referenced_dat_exists ? L"Yes" : L"No") << L"\r\n";
+        }
+        if (!sidecar.channel_id.empty()) {
+            text << L"Channel/camera id: " << widen(sidecar.channel_id) << L"\r\n";
+        }
+        if (!sidecar.signature_method.empty()) {
+            text << L"Signature method: " << widen(sidecar.signature_method) << L"\r\n";
+        }
+        if (!sidecar.digest_method.empty()) {
+            text << L"Digest method: " << widen(sidecar.digest_method) << L"\r\n";
+        }
+        if (!sidecar.public_key_source.empty()) {
+            text << L"Public key source: " << widen(sidecar.public_key_source) << L"\r\n";
+        }
+        if (!sidecar.verification_error.empty()) {
+            text << L"Verification detail: " << widen(sidecar.verification_error) << L"\r\n";
+        }
+        if (sidecar.has_data_size_bytes) {
+            text << L"DAT size check: " << (sidecar.dat_size_plausible ? L"Plausible" : L"Warning") << L"\r\n";
+        }
+        for (const auto& warning : sidecar.integrity_warnings) {
+            text << L"Warning: " << widen(warning) << L"\r\n";
+        }
+    }
+
     if (metadata.has_dat_frame_ticks || metadata.sidecar.available ||
         metadata.confidence == dat_player::RecordingMetadataConfidence::Low) {
         text << L"\r\n\r\nRecording data:\r\n";
@@ -1324,7 +1434,7 @@ std::wstring build_info_text() {
     return text.str();
 }
 
-void update_info(bool force = false) {
+void update_info(bool force) {
     update_file_path_text();
     update_timeline();
     if (!g_state.info_label || !g_state.details_visible) {
@@ -1382,6 +1492,7 @@ void set_enabled_after_load(bool enabled) {
 void reset_loaded_state() {
     stop_playback();
     stop_preview();
+    ++g_state.integrity_generation;
     g_state.index = {};
     g_state.loaded_path.clear();
     g_state.decode_test_text.clear();
@@ -1459,6 +1570,7 @@ std::filesystem::path ask_for_dat_file(HWND owner) {
 bool load_dat_path(HWND owner, const std::filesystem::path& path, bool dropped_file) {
     stop_playback();
     stop_preview();
+    ++g_state.integrity_generation;
     if (path.empty()) {
         return false;
     }
@@ -1531,6 +1643,7 @@ bool load_dat_path(HWND owner, const std::filesystem::path& path, bool dropped_f
             InvalidateRect(g_state.video_panel, nullptr, TRUE);
         }
         update_info(true);
+        start_integrity_verification_if_needed();
 
         if (g_state.index.frames.empty()) {
             reset_loaded_state();
@@ -2685,6 +2798,25 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         }
         break;
 
+    case kIntegrityFinishedMessage: {
+        std::unique_ptr<IntegrityFinishedMessage> integrity_message(reinterpret_cast<IntegrityFinishedMessage*>(lparam));
+        if (!integrity_message || integrity_message->generation != g_state.integrity_generation.load()) {
+            return 0;
+        }
+
+        auto& current_sidecar = g_state.index.summary.recording_metadata.sidecar;
+        if (!current_sidecar.available || current_sidecar.path != integrity_message->sidecar.path) {
+            return 0;
+        }
+
+        current_sidecar = std::move(integrity_message->sidecar);
+        if (!integrity_message->cache_key.empty()) {
+            g_state.integrity_cache[integrity_message->cache_key] = current_sidecar;
+        }
+        update_info(true);
+        return 0;
+    }
+
     case kPlaybackFrameMessage: {
         std::unique_ptr<UiPlaybackFrame> frame(reinterpret_cast<UiPlaybackFrame*>(lparam));
         if (frame && frame->generation == g_state.playback_generation.load()) {
@@ -2861,6 +2993,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         DragAcceptFiles(hwnd, FALSE);
         stop_playback();
         stop_preview();
+        ++g_state.integrity_generation;
         if (g_state.ui_font) {
             DeleteObject(g_state.ui_font);
             g_state.ui_font = nullptr;

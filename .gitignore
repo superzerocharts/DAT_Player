@@ -4,6 +4,7 @@ dist/
 out/
 bin/
 obj/
+.dotnet/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
@@ -34,13 +35,16 @@ _deps/
 *.res
 *.manifest
 
-# Media and sidecar files
+# Media and related data files
 *.dat
 *.sef
 *.sef2
 *.mp4
 *.mkv
 *.avi
+
+!tests/fixtures/
+!tests/fixtures/**
 
 # Logs, caches, and temporary files
 *.log
