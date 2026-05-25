@@ -1872,9 +1872,6 @@ void cycle_playback_speed() {
     update_info(true);
     std::wostringstream status;
     status << L"Speed: " << playback_speed_label();
-    if (g_state.playing) {
-        status << L" while playing.";
-    }
     set_status(status.str());
 }
 
@@ -2315,7 +2312,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             }
             update_info();
             std::wostringstream status;
-            status << L"Speed: " << playback_speed_label() << L" while playing.";
+            status << L"Speed: " << playback_speed_label();
             set_status(status.str());
         }
         return 0;
