@@ -4,15 +4,18 @@
 #include <fstream>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace dat_player {
 namespace {
 
-constexpr std::size_t kPreMarkerBytes = 16;
+constexpr std::size_t kLegacyPreMarkerBytes = 16;
+constexpr std::size_t kRecordingTickPreMarkerBytes = 17;
 constexpr std::size_t kMarkerBytes = 4;
 constexpr std::size_t kPayloadSizeBytes = 4;
-constexpr std::size_t kRecordHeaderBytes = kPreMarkerBytes + kMarkerBytes + kPayloadSizeBytes;
+constexpr std::size_t kRecordHeaderBytes = kRecordingTickPreMarkerBytes + kMarkerBytes + kPayloadSizeBytes;
 constexpr std::size_t kCarryBytes = kRecordHeaderBytes - 1;
+constexpr double kDotNetTicksPerSecond = 10'000'000.0;
 
 std::uint32_t read_u32_le(const unsigned char* data) {
     return static_cast<std::uint32_t>(data[0]) |
@@ -72,6 +75,80 @@ void finalize_estimates(DatFrameIndex& index, double timebase_units_per_second) 
     }
 }
 
+bool recording_tick_span_is_plausible(const DatFrameIndex& index) {
+    if (index.frames.size() < 2) {
+        return false;
+    }
+    const auto& first = index.frames.front();
+    const auto& last = index.frames.back();
+    if (!first.has_recording_ticks || !last.has_recording_ticks || last.recording_ticks <= first.recording_ticks) {
+        return false;
+    }
+    const double duration_seconds = static_cast<double>(last.recording_ticks - first.recording_ticks) / kDotNetTicksPerSecond;
+    return duration_seconds > 0.0 && duration_seconds < 24.0 * 60.0 * 60.0;
+}
+
+void apply_recording_tick_timing(DatFrameIndex& index) {
+    if (!recording_tick_span_is_plausible(index)) {
+        index.summary.timestamp_units_per_second = 39062.5;
+        return;
+    }
+
+    const auto first_ticks = index.frames.front().recording_ticks;
+    const auto last_ticks = index.frames.back().recording_ticks;
+    index.summary.duration_seconds = static_cast<double>(last_ticks - first_ticks) / kDotNetTicksPerSecond;
+    index.summary.estimated_fps = static_cast<double>(index.frames.size() - 1) / index.summary.duration_seconds;
+    index.summary.timestamp_units_per_second = kDotNetTicksPerSecond;
+    index.summary.using_recording_ticks_for_timing = true;
+    index.summary.recording_metadata.has_dat_frame_ticks = true;
+    index.summary.recording_metadata.first_frame_ticks = first_ticks;
+    index.summary.recording_metadata.last_frame_ticks = last_ticks;
+    index.summary.recording_metadata.dat_duration_seconds = index.summary.duration_seconds;
+    index.summary.recording_metadata.confidence = RecordingMetadataConfidence::Medium;
+    index.summary.recording_metadata.source = "DAT frame ticks";
+
+    for (auto& frame : index.frames) {
+        if (frame.has_recording_ticks && frame.recording_ticks >= first_ticks) {
+            frame.timestamp = frame.recording_ticks;
+            frame.elapsed_seconds = static_cast<double>(frame.recording_ticks - first_ticks) / kDotNetTicksPerSecond;
+            frame.has_elapsed_seconds = true;
+        }
+    }
+}
+
+void apply_sidecar_metadata(DatFrameIndex& index, RecordingSidecarMetadata sidecar) {
+    if (!sidecar.available) {
+        return;
+    }
+
+    index.summary.recording_metadata.sidecar = std::move(sidecar);
+    auto& metadata = index.summary.recording_metadata;
+    const bool sidecar_has_range = metadata.sidecar.has_start_ticks && metadata.sidecar.has_end_ticks;
+    if (!metadata.has_dat_frame_ticks) {
+        metadata.confidence = sidecar_has_range ? RecordingMetadataConfidence::Medium : RecordingMetadataConfidence::None;
+        metadata.source = sidecar_has_range ? ".sef2 sidecar" : metadata.source;
+        if (sidecar_has_range && metadata.sidecar.end_ticks > metadata.sidecar.start_ticks) {
+            metadata.dat_duration_seconds =
+                static_cast<double>(metadata.sidecar.end_ticks - metadata.sidecar.start_ticks) / kDotNetTicksPerSecond;
+        }
+        return;
+    }
+
+    if (sidecar_has_range) {
+        constexpr std::uint64_t tolerance_ticks = 2ULL * 10'000'000ULL;
+        const auto start_delta = metadata.first_frame_ticks > metadata.sidecar.start_ticks
+            ? metadata.first_frame_ticks - metadata.sidecar.start_ticks
+            : metadata.sidecar.start_ticks - metadata.first_frame_ticks;
+        const auto end_delta = metadata.last_frame_ticks > metadata.sidecar.end_ticks
+            ? metadata.last_frame_ticks - metadata.sidecar.end_ticks
+            : metadata.sidecar.end_ticks - metadata.last_frame_ticks;
+        if (start_delta <= tolerance_ticks && end_delta <= tolerance_ticks) {
+            metadata.confidence = RecordingMetadataConfidence::High;
+            metadata.source = "DAT frame ticks + .sef2 sidecar";
+        }
+    }
+}
+
 } // namespace
 
 DatFrameIndexer::DatFrameIndexer(DatIndexOptions options)
@@ -90,6 +167,7 @@ DatFrameIndex DatFrameIndexer::index_file(const std::filesystem::path& dat_path)
     const auto file_size = std::filesystem::file_size(dat_path);
     auto index = index_stream(input, static_cast<std::uint64_t>(file_size));
     index.summary.sidecar_calibration = try_load_sidecar_calibration(dat_path);
+    apply_sidecar_metadata(index, try_load_sef2_sidecar(dat_path));
 
     if (index.summary.sidecar_calibration.available) {
         index.summary.duration_seconds = index.summary.sidecar_calibration.duration_seconds;
@@ -126,7 +204,7 @@ DatFrameIndex DatFrameIndexer::index_stream(std::istream& input, std::uint64_t s
         const bool has_more_bytes = checked_add(chunk_offset, static_cast<std::uint64_t>(bytes_read)) < source_size;
         const std::size_t scan_limit = window.size();
 
-        std::size_t pos = kPreMarkerBytes;
+        std::size_t pos = kLegacyPreMarkerBytes;
         while (pos + kMarkerBytes <= scan_limit) {
             if (has_more_bytes && pos + kMarkerBytes + kPayloadSizeBytes > window.size()) {
                 break;
@@ -152,14 +230,18 @@ DatFrameIndex DatFrameIndexer::index_stream(std::istream& input, std::uint64_t s
 
             ++index.summary.candidate_markers;
             const auto marker_offset = window_offset + static_cast<std::uint64_t>(pos);
-            if (pos < kPreMarkerBytes || pos + kMarkerBytes + kPayloadSizeBytes > window.size()) {
+            if (pos < kLegacyPreMarkerBytes || pos + kMarkerBytes + kPayloadSizeBytes > window.size()) {
                 ++index.summary.rejected_records;
                 ++pos;
                 continue;
             }
 
             const auto* base = window.data() + pos;
-            const auto timestamp = read_u64_le(base - 16);
+            const auto legacy_timestamp = read_u64_le(base - kLegacyPreMarkerBytes);
+            const bool has_recording_ticks = pos >= kRecordingTickPreMarkerBytes &&
+                is_plausible_dotnet_ticks(read_u64_le(base - kRecordingTickPreMarkerBytes));
+            const auto recording_ticks = has_recording_ticks ? read_u64_le(base - kRecordingTickPreMarkerBytes) : 0;
+            const auto timestamp = has_recording_ticks ? recording_ticks : legacy_timestamp;
             const auto width = read_u32_le(base - 8);
             const auto height = read_u32_le(base - 4);
             const auto payload_size = read_u32_le(base + 4);
@@ -179,13 +261,18 @@ DatFrameIndex DatFrameIndexer::index_stream(std::istream& input, std::uint64_t s
             index.frames.push_back(DatFrameRecord{
                 type,
                 timestamp,
+                legacy_timestamp,
+                recording_ticks,
+                0.0,
                 width,
                 height,
                 payload_size,
-                marker_offset - kPreMarkerBytes,
+                marker_offset - (has_recording_ticks ? kRecordingTickPreMarkerBytes : kLegacyPreMarkerBytes),
                 marker_offset,
                 payload_offset,
-                type == DatFrameType::H264
+                type == DatFrameType::H264,
+                has_recording_ticks,
+                false
             });
 
             skip_until_offset = std::max(skip_until_offset, payload_end);
@@ -207,7 +294,14 @@ DatFrameIndex DatFrameIndexer::index_stream(std::istream& input, std::uint64_t s
         return left.marker_offset < right.marker_offset;
     });
 
-    finalize_estimates(index, options_.fallback_timebase_units_per_second);
+    apply_recording_tick_timing(index);
+    if (!index.summary.using_recording_ticks_for_timing) {
+        finalize_estimates(index, options_.fallback_timebase_units_per_second);
+        if (index.summary.duration_seconds > 0.0) {
+            index.summary.recording_metadata.confidence = RecordingMetadataConfidence::Low;
+            index.summary.recording_metadata.source = "legacy DAT timing";
+        }
+    }
     return index;
 }
 

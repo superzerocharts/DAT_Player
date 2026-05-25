@@ -18,7 +18,8 @@ if(MSVC)
 endif()
 
 add_library(dat_indexer
-    src/DatFrameIndexer.cpp)
+    src/DatFrameIndexer.cpp
+    src/RecordingMetadata.cpp)
 
 target_include_directories(dat_indexer
     PUBLIC

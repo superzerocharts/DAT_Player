@@ -1,5 +1,7 @@
 #pragma once
 
+#include "dat_player/RecordingMetadata.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -17,6 +19,9 @@ enum class DatFrameType {
 struct DatFrameRecord {
     DatFrameType type{};
     std::uint64_t timestamp = 0;
+    std::uint64_t legacy_timestamp = 0;
+    std::uint64_t recording_ticks = 0;
+    double elapsed_seconds = 0.0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t payload_size = 0;
@@ -24,6 +29,8 @@ struct DatFrameRecord {
     std::uint64_t marker_offset = 0;
     std::uint64_t payload_offset = 0;
     bool keyframe = false;
+    bool has_recording_ticks = false;
+    bool has_elapsed_seconds = false;
 };
 
 struct DatIndexOptions {
@@ -46,7 +53,10 @@ struct DatIndexSummary {
     std::uint64_t rejected_records = 0;
     double duration_seconds = 0.0;
     double estimated_fps = 0.0;
+    double timestamp_units_per_second = 39062.5;
+    bool using_recording_ticks_for_timing = false;
     DatSidecarCalibration sidecar_calibration{};
+    RecordingMetadata recording_metadata{};
 };
 
 struct DatFrameIndex {

@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -14,6 +16,7 @@ namespace {
 using dat_player::DatFrameIndexer;
 using dat_player::DatFrameType;
 using dat_player::DatIndexOptions;
+using dat_player::RecordingMetadataConfidence;
 
 struct TestFailure : std::runtime_error {
     using std::runtime_error::runtime_error;
@@ -46,6 +49,22 @@ void append_record(
     std::uint32_t height,
     std::uint32_t payload_size) {
     append_u64_le(data, timestamp);
+    append_u32_le(data, width);
+    append_u32_le(data, height);
+    data.insert(data.end(), marker, marker + 4);
+    append_u32_le(data, payload_size);
+    data.insert(data.end(), payload_size, 0x5a);
+}
+
+void append_record_with_dotnet_ticks(
+    std::vector<unsigned char>& data,
+    const char marker[4],
+    std::uint64_t recording_ticks,
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t payload_size) {
+    append_u64_le(data, recording_ticks);
+    data.push_back(0x01);
     append_u32_le(data, width);
     append_u32_le(data, height);
     data.insert(data.end(), marker, marker + 4);
@@ -255,6 +274,117 @@ void fps_estimate_uses_frame_count_and_duration() {
     require(std::fabs(index.summary.estimated_fps - 1.0) < 0.0001, "fps estimate mismatch");
 }
 
+void marker_minus_17_dotnet_ticks_drive_timing() {
+    constexpr std::uint64_t start_ticks = 639148479165410000ULL;
+    std::vector<unsigned char> data;
+    append_record_with_dotnet_ticks(data, "H264", start_ticks, 1280, 720, 1);
+    append_record_with_dotnet_ticks(data, "I264", start_ticks + 10'000'000ULL, 1280, 720, 1);
+    append_record_with_dotnet_ticks(data, "I264", start_ticks + 20'000'000ULL, 1280, 720, 1);
+
+    auto input = stream_from(data);
+    const auto index = DatFrameIndexer().index_stream(input, data.size());
+
+    require(index.frames.size() == 3, "expected three frames with recording ticks");
+    require(index.summary.using_recording_ticks_for_timing, "expected true recording ticks to drive timing");
+    require(index.frames[0].has_recording_ticks, "first frame should store recording ticks");
+    require(index.frames[0].recording_ticks == start_ticks, "recording tick mismatch");
+    require(index.frames[0].timestamp == start_ticks, "timestamp should use true recording tick");
+    require(index.frames[0].record_offset == 0, "true-tick record should start at marker -17");
+    require(std::fabs(index.summary.duration_seconds - 2.0) < 0.0001, "dotnet duration estimate mismatch");
+    require(std::fabs(index.summary.estimated_fps - 1.0) < 0.0001, "dotnet fps estimate mismatch");
+    require(index.summary.recording_metadata.confidence == RecordingMetadataConfidence::Medium, "DAT-only confidence should be medium");
+}
+
+void marker_minus_16_legacy_timing_remains_fallback() {
+    std::vector<unsigned char> data;
+    append_record(data, "H264", 0, 1280, 720, 1);
+    append_record(data, "I264", 78125, 1280, 720, 1);
+
+    auto input = stream_from(data);
+    const auto index = DatFrameIndexer().index_stream(input, data.size());
+
+    require(index.frames.size() == 2, "expected two legacy frames");
+    require(!index.summary.using_recording_ticks_for_timing, "legacy timing should remain fallback");
+    require(!index.frames[0].has_recording_ticks, "legacy frame should not claim recording ticks");
+    require(index.frames[0].timestamp == 0, "legacy timestamp should be preserved");
+    require(std::fabs(index.summary.duration_seconds - 2.0) < 0.0001, "legacy fallback duration mismatch");
+    require(index.summary.recording_metadata.confidence == RecordingMetadataConfidence::Low, "legacy-only confidence should be low");
+}
+
+void sef2_parser_extracts_recording_metadata() {
+    const std::string xml =
+        "<root>"
+        "<start>2026-05-20T04:25:16.5410000</start>"
+        "<end>2026-05-20T04:30:14.7380000</end>"
+        "<channels><channel name=\"MjA1IENob2tlIFBvaW50\" manufacturer=\"AXIS\" model=\"AXIS Q1645 Network Camera\" /></channels>"
+        "</root>";
+
+    const auto metadata = dat_player::parse_sef2_metadata_xml(xml);
+    require(metadata.available, "expected sidecar metadata");
+    require(metadata.has_start_ticks && metadata.start_ticks == 639148479165410000ULL, "start tick mismatch");
+    require(metadata.has_end_ticks && metadata.end_ticks == 639148482147380000ULL, "end tick mismatch");
+    require(metadata.camera_name == "205 Choke Point", "camera name should decode from base64");
+    require(metadata.manufacturer == "AXIS", "manufacturer mismatch");
+    require(metadata.model == "AXIS Q1645 Network Camera", "model mismatch");
+}
+
+std::filesystem::path unique_temp_dir() {
+    auto dir = std::filesystem::temp_directory_path() /
+        ("dat_player_metadata_test_" + std::to_string(static_cast<unsigned long long>(std::rand())));
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+void write_binary_file(const std::filesystem::path& path, const std::vector<unsigned char>& data) {
+    std::ofstream output(path, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+}
+
+void write_text_file(const std::filesystem::path& path, const std::string& text) {
+    std::ofstream output(path, std::ios::binary);
+    output << text;
+}
+
+void dat_ticks_matching_sef2_are_high_confidence() {
+    constexpr std::uint64_t start_ticks = 639148479165410000ULL;
+    constexpr std::uint64_t end_ticks = 639148482147380000ULL;
+    const auto dir = unique_temp_dir();
+    const auto dat_path = dir / "clip.dat";
+    const auto sef2_path = dir / "clip.sef2";
+    std::vector<unsigned char> data;
+    append_record_with_dotnet_ticks(data, "H264", start_ticks, 1280, 720, 1);
+    append_record_with_dotnet_ticks(data, "I264", end_ticks, 1280, 720, 1);
+    write_binary_file(dat_path, data);
+    write_text_file(sef2_path,
+        "<root><start>2026-05-20T04:25:16.5410000</start>"
+        "<end>2026-05-20T04:30:14.7380000</end></root>");
+
+    const auto index = DatFrameIndexer().index_file(dat_path);
+    require(index.summary.recording_metadata.confidence == RecordingMetadataConfidence::High, "matching sidecar should be high confidence");
+    require(index.summary.recording_metadata.sidecar.available, "sidecar should be available");
+    require(index.summary.recording_metadata.source == "DAT frame ticks + .sef2 sidecar", "metadata source mismatch");
+    std::filesystem::remove_all(dir);
+}
+
+void sef2_only_metadata_is_medium_confidence() {
+    const auto dir = unique_temp_dir();
+    const auto dat_path = dir / "clip.dat";
+    const auto sef2_path = dir / "clip.sef2";
+    std::vector<unsigned char> data;
+    append_record(data, "H264", 0, 1280, 720, 1);
+    append_record(data, "I264", 78125, 1280, 720, 1);
+    write_binary_file(dat_path, data);
+    write_text_file(sef2_path,
+        "<root><start>2026-05-20T04:25:16.5410000</start>"
+        "<end>2026-05-20T04:30:14.7380000</end></root>");
+
+    const auto index = DatFrameIndexer().index_file(dat_path);
+    require(index.summary.recording_metadata.confidence == RecordingMetadataConfidence::Medium, "sidecar-only confidence should be medium");
+    require(index.summary.recording_metadata.sidecar.available, "sidecar should be available");
+    require(!index.summary.using_recording_ticks_for_timing, "sidecar should not alter legacy playback timing");
+    std::filesystem::remove_all(dir);
+}
+
 void final_buffer_boundary_is_scanned() {
     std::vector<unsigned char> data;
     append_record(data, "H264", 1000, 320, 240, 8);
@@ -295,6 +425,11 @@ int main() {
     failures += run_test("complete_header_near_buffer_end_is_detected", complete_header_near_buffer_end_is_detected);
     failures += run_test("duration_estimate_uses_fallback_timebase", duration_estimate_uses_fallback_timebase);
     failures += run_test("fps_estimate_uses_frame_count_and_duration", fps_estimate_uses_frame_count_and_duration);
+    failures += run_test("marker_minus_17_dotnet_ticks_drive_timing", marker_minus_17_dotnet_ticks_drive_timing);
+    failures += run_test("marker_minus_16_legacy_timing_remains_fallback", marker_minus_16_legacy_timing_remains_fallback);
+    failures += run_test("sef2_parser_extracts_recording_metadata", sef2_parser_extracts_recording_metadata);
+    failures += run_test("dat_ticks_matching_sef2_are_high_confidence", dat_ticks_matching_sef2_are_high_confidence);
+    failures += run_test("sef2_only_metadata_is_medium_confidence", sef2_only_metadata_is_medium_confidence);
     failures += run_test("final_buffer_boundary_is_scanned", final_buffer_boundary_is_scanned);
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

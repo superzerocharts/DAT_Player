@@ -1,6 +1,6 @@
 # DAT Player
 
-Standalone native Windows DAT player for compatible Mirasys/Spotter-style `.dat`
+Standalone native Windows DAT player for compatible recording `.dat`
 files containing raw H.264 frame payloads.
 
 DAT Player is intentionally small and portable. It has no FFmpeg, mpv, VLC, Qt,
@@ -11,6 +11,8 @@ and Media Foundation.
 ## Current Features
 
 - Read-only DAT indexing for `H264` and `I264` frame records
+- Read-only recording-time metadata extraction from DAT frame ticks and optional
+  `.sef2` sidecar XML
 - Media Foundation H.264 decode path
 - Cropped NV12-to-BGRA rendering for padded decoder output such as `1920 x 1088`
   displayed as the indexed/source size such as `1920 x 1080`
@@ -22,14 +24,17 @@ and Media Foundation.
 - `Actual Size` window sizing based on the indexed/source resolution
 - Portable Release package folder containing only `DatPlayer.exe` and `README.md`
 
-DAT Player still supports only compatible `.dat` files in this phase. It does
-not support `.mp4`, `.mkv`, `.avi`, `.sef`, `.sef2`, arbitrary video files,
-audio, or conversion.
+DAT Player still plays only compatible `.dat` files in this phase. It does not
+play `.mp4`, `.mkv`, `.avi`, `.sef`, `.sef2`, arbitrary video files, audio, or
+conversion outputs. Optional `.sef2` files are inspected only as read-only
+metadata sidecars.
 
 ## Project Layout
 
 - `include/dat_player/DatFrameIndexer.h` - public indexer API
+- `include/dat_player/RecordingMetadata.h` - recording-time metadata API
 - `src/DatFrameIndexer.cpp` - streaming marker scanner and record parser
+- `src/RecordingMetadata.cpp` - read-only `.sef2` and timestamp helpers
 - `src/player/main.cpp` - native Win32 app shell
 - `src/playback/H264Decoder.*` - isolated Media Foundation decode/playback layer
 - `src/playback/DecodeSmokeTest.cpp` - command-line decode/render/playback smoke tool
@@ -122,12 +127,16 @@ Rendered BGRA output can be dumped to a BMP for visual inspection:
 - Markers are ASCII `H264` and `I264`
 - `H264` records are keyframes
 - `I264` records are interframes
-- Timestamp is 16 bytes before marker, little-endian `uint64`
+- True recording timestamp, when present, is 17 bytes before marker as
+  little-endian .NET `DateTime` ticks
+- Legacy/fallback timestamp is 16 bytes before marker, little-endian `uint64`
 - Width is 8 bytes before marker, little-endian `uint32`
 - Height is 4 bytes before marker, little-endian `uint32`
 - Payload size is 4 bytes after marker, little-endian `uint32`
 - Payload starts immediately after the marker and payload-size field
-- Fallback timestamp timebase is `39062.5` units per second
+- True recording timestamp timebase is `10,000,000` ticks per second
+- Legacy fallback timestamp timebase is `39062.5` units per second
 
-Optional `.sef` / `.sef2` calibration is reserved for a future phase. The player
-does not modify source DAT files.
+Optional `.sef2` sidecars can provide recording start/end, camera, and device
+metadata. The player does not require sidecars and does not modify source DAT or
+sidecar files.

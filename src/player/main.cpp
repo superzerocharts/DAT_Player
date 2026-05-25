@@ -377,13 +377,20 @@ double seconds_for_frame(std::uint64_t frame) {
     }
 
     const auto clamped = std::min<std::uint64_t>(frame, frame_count() - 1);
+    const auto& record = g_state.index.frames[static_cast<std::size_t>(clamped)];
+    if (record.has_elapsed_seconds) {
+        return record.elapsed_seconds;
+    }
     const auto first = g_state.index.frames.front().timestamp;
-    const auto timestamp = g_state.index.frames[static_cast<std::size_t>(clamped)].timestamp;
+    const auto timestamp = record.timestamp;
     if (timestamp < first) {
         const double fps = playback_fps();
         return fps > 0.0 ? static_cast<double>(clamped) / fps : 0.0;
     }
-    const double timestamp_seconds = static_cast<double>(timestamp - first) / 39062.5;
+    const double timebase = g_state.index.summary.timestamp_units_per_second > 0.0
+        ? g_state.index.summary.timestamp_units_per_second
+        : 39062.5;
+    const double timestamp_seconds = static_cast<double>(timestamp - first) / timebase;
     const double fallback_seconds = playback_fps() > 0.0 ? static_cast<double>(clamped) / playback_fps() : 0.0;
     if (timestamp_seconds <= std::max(0.5, fallback_seconds * 4.0 + 0.5)) {
         return timestamp_seconds;
@@ -407,10 +414,19 @@ double media_seconds_from_start(
     std::uint64_t frame,
     double fallback_fps) {
     if (!index.frames.empty() && start_frame < index.frames.size() && frame < index.frames.size()) {
+        const auto& target_record = index.frames[static_cast<std::size_t>(frame)];
+        const auto& start_record = index.frames[static_cast<std::size_t>(start_frame)];
+        if (target_record.has_elapsed_seconds && start_record.has_elapsed_seconds &&
+            target_record.elapsed_seconds >= start_record.elapsed_seconds) {
+            return target_record.elapsed_seconds - start_record.elapsed_seconds;
+        }
         const auto start_timestamp = index.frames[static_cast<std::size_t>(start_frame)].timestamp;
         const auto timestamp = index.frames[static_cast<std::size_t>(frame)].timestamp;
         if (timestamp >= start_timestamp) {
-            const double seconds = static_cast<double>(timestamp - start_timestamp) / 39062.5;
+            const double timebase = index.summary.timestamp_units_per_second > 0.0
+                ? index.summary.timestamp_units_per_second
+                : 39062.5;
+            const double seconds = static_cast<double>(timestamp - start_timestamp) / timebase;
             const double frame_delta = static_cast<double>(frame - start_frame);
             const double fallback_seconds = fallback_fps > 0.0 ? frame_delta / fallback_fps : frame_delta / 30.0;
             if (seconds >= 0.0 && seconds <= std::max(0.5, fallback_seconds * 4.0 + 0.5)) {
@@ -677,9 +693,19 @@ void update_file_path_text() {
     if (!g_state.file_path_edit) {
         return;
     }
-    const std::wstring text = g_state.loaded_path.empty()
+    std::wstring text = g_state.loaded_path.empty()
         ? L"No DAT file loaded"
         : g_state.loaded_path.filename().wstring();
+    const auto& metadata = g_state.index.summary.recording_metadata;
+    const auto start_ticks = metadata.has_dat_frame_ticks
+        ? metadata.first_frame_ticks
+        : (metadata.sidecar.has_start_ticks ? metadata.sidecar.start_ticks : 0);
+    if (!g_state.loaded_path.empty() && start_ticks != 0) {
+        const auto formatted = dat_player::format_dotnet_ticks(start_ticks);
+        if (!formatted.empty()) {
+            text += L"  -  " + widen(formatted);
+        }
+    }
     set_window_text_if_changed(g_state.file_path_edit, text);
 }
 
@@ -964,7 +990,7 @@ LRESULT CALLBACK video_panel_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM
 
 std::wstring build_info_text() {
     if (g_state.index.frames.empty()) {
-        return L"No DAT file loaded.\r\n\r\nOpen a compatible Mirasys/Spotter-style .dat file to index it.";
+        return L"No DAT file loaded.\r\n\r\nOpen a compatible recording .dat file to index it.";
     }
 
     const auto& first = g_state.index.frames.front();
@@ -983,6 +1009,50 @@ std::wstring build_info_text() {
          << L"Keyframes: " << keys << L"\r\n"
          << L"Interframes: " << interframes << L"\r\n"
          << L"Timeline frame: " << (g_state.current_frame + 1) << L" / " << total;
+    const auto& metadata = g_state.index.summary.recording_metadata;
+    if (metadata.has_dat_frame_ticks || metadata.sidecar.available) {
+        text << L"\r\n\r\nRecording metadata:\r\n";
+        const auto start_ticks = metadata.has_dat_frame_ticks
+            ? metadata.first_frame_ticks
+            : (metadata.sidecar.has_start_ticks ? metadata.sidecar.start_ticks : 0);
+        const auto end_ticks = metadata.has_dat_frame_ticks
+            ? metadata.last_frame_ticks
+            : (metadata.sidecar.has_end_ticks ? metadata.sidecar.end_ticks : 0);
+        if (start_ticks != 0) {
+            text << L"Recording start: " << widen(dat_player::format_dotnet_ticks(start_ticks)) << L" raw\r\n";
+        }
+        if (end_ticks != 0) {
+            text << L"Recording end: " << widen(dat_player::format_dotnet_ticks(end_ticks)) << L" raw\r\n";
+        }
+        text << L"Recording duration: " << format_double(total_duration_seconds(), 3) << L" sec\r\n";
+        if (!metadata.sidecar.camera_name.empty()) {
+            text << L"Camera: " << widen(metadata.sidecar.camera_name) << L"\r\n";
+        }
+        if (!metadata.sidecar.manufacturer.empty() || !metadata.sidecar.model.empty()) {
+            text << L"Device: " << widen(metadata.sidecar.manufacturer);
+            if (!metadata.sidecar.manufacturer.empty() && !metadata.sidecar.model.empty()) {
+                text << L" ";
+            }
+            text << widen(metadata.sidecar.model) << L"\r\n";
+        }
+        text << L"Metadata source: " << widen(metadata.source.empty() ? std::string("none") : metadata.source) << L"\r\n"
+             << L"Confidence: " << widen(dat_player::to_string(metadata.confidence)) << L"\r\n";
+        if (!metadata.sidecar.timezone_offset_minutes_candidates.empty()) {
+            text << L"Timezone candidates: ";
+            for (std::size_t i = 0; i < metadata.sidecar.timezone_offset_minutes_candidates.size(); ++i) {
+                if (i > 0) {
+                    text << L", ";
+                }
+                const int minutes = metadata.sidecar.timezone_offset_minutes_candidates[i];
+                text << (minutes >= 0 ? L"+" : L"-")
+                     << std::setw(2) << std::setfill(L'0') << (std::abs(minutes) / 60)
+                     << L":" << std::setw(2) << (std::abs(minutes) % 60)
+                     << std::setfill(L' ');
+            }
+            text << L"\r\n";
+        }
+        text << L"Timezone display: raw recording ticks; archive timezone conversion not applied";
+    }
     if (!g_state.decode_smoke_text.empty()) {
         text << L"\r\n\r\nDiagnostics:\r\n" << g_state.decode_smoke_text;
     }
@@ -1354,10 +1424,14 @@ std::wstring format_playback_diagnostics(const std::wstring& state) {
          << L"Paint avg/max: " << format_double(g_state.average_paint_ms, 2)
          << L" / " << format_double(g_state.max_paint_ms, 2) << L" ms\r\n";
     if (!g_state.index.frames.empty() && g_state.current_frame < frame_count()) {
-        const auto timestamp = g_state.index.frames[static_cast<std::size_t>(g_state.current_frame)].timestamp;
-        const double seconds = static_cast<double>(timestamp - g_state.index.frames.front().timestamp) / 39062.5;
+        const auto& frame = g_state.index.frames[static_cast<std::size_t>(g_state.current_frame)];
+        const auto timestamp = frame.timestamp;
+        const double seconds = seconds_for_frame(g_state.current_frame);
         text << L"Current timestamp: " << timestamp << L"\r\n"
              << L"Approx time: " << format_double(seconds, 2) << L" sec\r\n";
+        if (frame.has_recording_ticks) {
+            text << L"Current recording time: " << widen(dat_player::format_dotnet_ticks(frame.recording_ticks)) << L" raw\r\n";
+        }
     }
     text << L"Timing: stable cadence from estimated FPS; DAT timestamps used for time display";
     return text.str();
