@@ -1210,6 +1210,12 @@ LRESULT CALLBACK details_panel_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
 
     case WM_CTLCOLORSTATIC: {
         HDC hdc = reinterpret_cast<HDC>(wparam);
+        if (reinterpret_cast<HWND>(lparam) == g_state.info_label) {
+            SetTextColor(hdc, RGB(35, 43, 51));
+            SetBkMode(hdc, OPAQUE);
+            SetBkColor(hdc, RGB(255, 255, 255));
+            return reinterpret_cast<LRESULT>(GetStockObject(WHITE_BRUSH));
+        }
         SetTextColor(hdc, RGB(35, 43, 51));
         SetBkMode(hdc, TRANSPARENT);
         return reinterpret_cast<LRESULT>(g_state.window_background_brush);
