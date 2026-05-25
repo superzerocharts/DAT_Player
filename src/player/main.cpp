@@ -1520,14 +1520,12 @@ void update_info(bool force) {
         reinterpret_cast<WPARAM>(&selection_start),
         reinterpret_cast<LPARAM>(&selection_end));
 
-    SendMessageW(g_state.info_label, WM_SETREDRAW, FALSE, 0);
     SetWindowTextW(g_state.info_label, info.c_str());
     SendMessageW(g_state.info_label, EM_SETSEL, selection_start, selection_end);
     const auto restored_first_line = static_cast<int>(SendMessageW(g_state.info_label, EM_GETFIRSTVISIBLELINE, 0, 0));
     if (first_visible_line != restored_first_line) {
         SendMessageW(g_state.info_label, EM_LINESCROLL, 0, first_visible_line - restored_first_line);
     }
-    SendMessageW(g_state.info_label, WM_SETREDRAW, TRUE, 0);
     RedrawWindow(
         g_state.info_label,
         nullptr,
