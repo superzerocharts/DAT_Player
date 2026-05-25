@@ -166,13 +166,7 @@ DatFrameIndex DatFrameIndexer::index_file(const std::filesystem::path& dat_path)
 
     const auto file_size = std::filesystem::file_size(dat_path);
     auto index = index_stream(input, static_cast<std::uint64_t>(file_size));
-    index.summary.sidecar_calibration = try_load_sidecar_calibration(dat_path);
     apply_sidecar_metadata(index, try_load_sef2_sidecar(dat_path));
-
-    if (index.summary.sidecar_calibration.available) {
-        index.summary.duration_seconds = index.summary.sidecar_calibration.duration_seconds;
-        index.summary.estimated_fps = index.summary.sidecar_calibration.fps;
-    }
 
     return index;
 }
@@ -303,15 +297,6 @@ DatFrameIndex DatFrameIndexer::index_stream(std::istream& input, std::uint64_t s
         }
     }
     return index;
-}
-
-DatSidecarCalibration try_load_sidecar_calibration(const std::filesystem::path&) {
-    // Future phase: inspect .sef/.sef2 sidecars to refine FPS and duration.
-    return {};
-}
-
-std::string to_string(DatFrameType type) {
-    return type == DatFrameType::H264 ? "H264" : "I264";
 }
 
 } // namespace dat_player

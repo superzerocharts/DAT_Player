@@ -33,13 +33,24 @@ function(dat_player_set_warnings target_name)
     endif()
 endfunction()
 
+function(dat_player_optimize_release_size target_name)
+    if(MSVC)
+        target_compile_options(${target_name} PRIVATE
+            $<$<CONFIG:Release>:/O1 /Ob1>)
+        target_link_options(${target_name} PRIVATE
+            $<$<CONFIG:Release>:/OPT:REF /OPT:ICF /INCREMENTAL:NO>)
+    endif()
+endfunction()
+
 dat_player_set_warnings(dat_indexer)
+dat_player_optimize_release_size(dat_indexer)
 
 add_executable(dat_indexer_tests
     tests/DatFrameIndexerTests.cpp)
 
 target_link_libraries(dat_indexer_tests PRIVATE dat_indexer)
 dat_player_set_warnings(dat_indexer_tests)
+dat_player_optimize_release_size(dat_indexer_tests)
 
 if(WIN32)
     add_library(dat_playback
@@ -66,6 +77,7 @@ if(WIN32)
             NOMINMAX)
 
     dat_player_set_warnings(dat_playback)
+    dat_player_optimize_release_size(dat_playback)
 
     add_executable(dat_player WIN32
         src/player/main.cpp
@@ -96,6 +108,7 @@ if(WIN32)
             NOMINMAX)
 
     dat_player_set_warnings(dat_player)
+    dat_player_optimize_release_size(dat_player)
 
     add_executable(dat_decode_smoke_test
         src/playback/DecodeSmokeTest.cpp)
@@ -106,6 +119,7 @@ if(WIN32)
             dat_playback)
 
     dat_player_set_warnings(dat_decode_smoke_test)
+    dat_player_optimize_release_size(dat_decode_smoke_test)
 endif()
 
 enable_testing()

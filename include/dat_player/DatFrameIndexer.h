@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <istream>
-#include <string>
 #include <vector>
 
 namespace dat_player {
@@ -41,12 +40,6 @@ struct DatIndexOptions {
     bool allow_zero_payload = false;
 };
 
-struct DatSidecarCalibration {
-    bool available = false;
-    double fps = 0.0;
-    double duration_seconds = 0.0;
-};
-
 struct DatIndexSummary {
     std::uint64_t source_size = 0;
     std::uint64_t candidate_markers = 0;
@@ -55,7 +48,6 @@ struct DatIndexSummary {
     double estimated_fps = 0.0;
     double timestamp_units_per_second = 39062.5;
     bool using_recording_ticks_for_timing = false;
-    DatSidecarCalibration sidecar_calibration{};
     RecordingMetadata recording_metadata{};
 };
 
@@ -74,9 +66,5 @@ public:
 private:
     DatIndexOptions options_;
 };
-
-DatSidecarCalibration try_load_sidecar_calibration(const std::filesystem::path& dat_path);
-
-std::string to_string(DatFrameType type);
 
 } // namespace dat_player
