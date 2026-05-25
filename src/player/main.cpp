@@ -57,7 +57,7 @@ constexpr UINT_PTR kTimelinePreviewTimerId = 42;
 constexpr UINT_PTR kResizeRefreshTimerId = 43;
 constexpr int kTrackbarMax = 10000;
 constexpr int kDefaultWindowWidth = 660;
-constexpr int kDefaultWindowHeight = 584;
+constexpr int kDefaultWindowHeight = 554;
 constexpr auto kPreviewThrottle = std::chrono::milliseconds(200);
 constexpr auto kDiagnosticsUpdateThrottle = std::chrono::milliseconds(500);
 constexpr auto kResizeRefreshDelay = std::chrono::milliseconds(90);
@@ -384,7 +384,7 @@ int minimum_client_width() {
 }
 
 int minimum_client_height() {
-    return 430;
+    return 400;
 }
 
 SIZE window_size_for_client_size(HWND hwnd, int client_width, int client_height) {
@@ -2439,13 +2439,15 @@ bool resize_to_actual_size() {
     const int padding = 14;
     const int header_height = 0;
     const int file_row_height = 22;
-    const int button_height = 32;
-    const int timeline_height = 58;
+    const int button_height = 24;
+    const int timeline_height = 51;
     const int status_height = 24;
+    const int video_to_timeline_gap = 8;
+    const int timeline_to_button_gap = 2;
+    const int button_to_status_gap = 12;
+    const int status_bottom_margin = 3;
     const int file_top = header_height + 12;
     const int content_top = file_top + file_row_height + 8;
-    const int content_bottom_margin = status_height + 16;
-    const int controls_height = button_height + 8;
 
     int details_width = 0;
     if (g_state.details_visible) {
@@ -2458,7 +2460,16 @@ bool resize_to_actual_size() {
     }
     const int video_side_width = std::max(source_width, minimum_video_width_for_controls());
     const int client_width = video_side_width + padding * 2 + (g_state.details_visible ? padding + details_width : 0);
-    const int client_height = content_top + source_height + timeline_height + controls_height + 16 + content_bottom_margin;
+    const int client_height =
+        content_top +
+        source_height +
+        video_to_timeline_gap +
+        timeline_height +
+        timeline_to_button_gap +
+        button_height +
+        button_to_status_gap +
+        status_height +
+        status_bottom_margin;
 
     RECT window_rect = {0, 0, client_width, client_height};
     const auto style = static_cast<DWORD>(GetWindowLongPtrW(g_state.hwnd, GWL_STYLE));
@@ -2562,17 +2573,20 @@ void layout_controls(HWND hwnd) {
     const int speed_button_width = button_width;
     const int actual_size_button_width = button_width;
     const int details_toggle_button_width = button_width;
-    const int button_height = 32;
-    const int timeline_height = 58;
+    const int button_height = 24;
+    const int timeline_height = 51;
     const int trackbar_height = 28;
     const int status_height = 24;
     const int time_label_width = 92;
     const int integrity_dot_size = 16;
     const int integrity_dot_gap = 6;
+    const int video_to_timeline_gap = 8;
+    const int timeline_to_button_gap = 2;
+    const int button_to_status_gap = 12;
+    const int status_bottom_margin = 3;
     const int file_top = header_height + 12;
     const int content_top = file_top + file_row_height + 8;
-    const int status_top = rect.bottom - status_height - 6;
-    const int content_bottom = status_top - 10;
+    const int status_top = rect.bottom - status_height - status_bottom_margin;
     const bool force_native_video =
         g_state.force_native_video_size &&
         g_state.requested_video_width > 0 &&
@@ -2596,13 +2610,13 @@ void layout_controls(HWND hwnd) {
         : (g_state.details_visible
             ? std::max(1, available_video_width)
             : std::max(controls_min_width, available_video_width));
-    const int content_height = std::max(220, content_bottom - content_top);
-    const int controls_height = button_height + 8;
+    const int content_height = std::max(220, status_top - content_top);
     const int video_height = force_native_video
         ? g_state.requested_video_height
-        : std::max(120, content_height - timeline_height - controls_height - 16);
-    const int timeline_top = content_top + video_height + 8;
-    const int controls_top = timeline_top + timeline_height + 2;
+        : std::max(120, content_height - video_to_timeline_gap - timeline_height - timeline_to_button_gap -
+            button_height - button_to_status_gap);
+    const int timeline_top = content_top + video_height + video_to_timeline_gap;
+    const int controls_top = timeline_top + timeline_height + timeline_to_button_gap;
     const int details_left = padding + video_width + padding;
 
     MoveWindow(g_state.file_label, 0, 0, 0, 0, TRUE);
