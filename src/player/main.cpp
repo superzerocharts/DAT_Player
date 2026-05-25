@@ -156,6 +156,9 @@ struct PlayerState {
     double max_paint_ms = 0.0;
     std::chrono::steady_clock::time_point last_ui_frame_time{};
     std::chrono::steady_clock::time_point last_info_update_time{};
+    RECT thumb_time_label_rect = {};
+    bool has_thumb_time_label_rect = false;
+    std::wstring displayed_thumb_time_text;
     std::uint64_t current_frame = 0;
     bool timeline_dragging = false;
     bool resume_after_timeline_drag = false;
@@ -527,6 +530,14 @@ void move_window_if_changed(HWND window, int x, int y, int width, int height, BO
     MoveWindow(window, x, y, width, height, repaint);
 }
 
+RECT padded_rect(RECT rect, int padding) {
+    rect.left -= padding;
+    rect.top -= padding;
+    rect.right += padding;
+    rect.bottom += padding;
+    return rect;
+}
+
 void update_play_button() {
     if (g_state.play_button) {
         const bool pause_would_cancel_scrub_resume =
@@ -588,8 +599,6 @@ void update_thumb_time_label(std::uint64_t display_frame) {
         return;
     }
 
-    set_window_text_if_changed(g_state.thumb_time_label, format_clock_time(seconds_for_frame(display_frame)));
-
     RECT timeline_rect = {};
     GetWindowRect(g_state.timeline, &timeline_rect);
     POINT timeline_origin = {timeline_rect.left, timeline_rect.top};
@@ -610,7 +619,39 @@ void update_thumb_time_label(std::uint64_t display_frame) {
     const int max_x = std::max<int>(min_x, client.right - padding - label_width);
     const int x = std::clamp(thumb_center - label_width / 2, min_x, max_x);
     const int y = timeline_origin.y + timeline_height - 2;
-    move_window_if_changed(g_state.thumb_time_label, x, y, label_width, label_height, FALSE);
+    const RECT new_rect = {x, y, x + label_width, y + label_height};
+    const auto new_text = format_clock_time(seconds_for_frame(display_frame));
+
+    const bool moved =
+        !g_state.has_thumb_time_label_rect ||
+        g_state.thumb_time_label_rect.left != new_rect.left ||
+        g_state.thumb_time_label_rect.top != new_rect.top ||
+        g_state.thumb_time_label_rect.right != new_rect.right ||
+        g_state.thumb_time_label_rect.bottom != new_rect.bottom;
+    const bool text_changed = g_state.displayed_thumb_time_text != new_text;
+
+    if (!moved && !text_changed) {
+        return;
+    }
+
+    constexpr int repaint_padding = 4;
+    const bool had_old_rect = g_state.has_thumb_time_label_rect;
+    const RECT old_rect = g_state.thumb_time_label_rect;
+
+    MoveWindow(g_state.thumb_time_label, new_rect.left, new_rect.top, label_width, label_height, TRUE);
+    set_window_text_if_changed(g_state.thumb_time_label, new_text);
+
+    if (had_old_rect) {
+        const RECT old_padded = padded_rect(old_rect, repaint_padding);
+        RedrawWindow(g_state.hwnd, &old_padded, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+    }
+    const RECT new_padded = padded_rect(new_rect, repaint_padding);
+    InvalidateRect(g_state.hwnd, &new_padded, TRUE);
+    InvalidateRect(g_state.thumb_time_label, nullptr, TRUE);
+
+    g_state.thumb_time_label_rect = new_rect;
+    g_state.has_thumb_time_label_rect = true;
+    g_state.displayed_thumb_time_text = new_text;
 }
 
 void update_timeline() {
@@ -1031,6 +1072,9 @@ void reset_loaded_state() {
     g_state.preview_superseded = 0;
     g_state.displayed_info_text.clear();
     g_state.last_info_update_time = {};
+    g_state.thumb_time_label_rect = {};
+    g_state.has_thumb_time_label_rect = false;
+    g_state.displayed_thumb_time_text.clear();
     set_enabled_after_load(false);
     if (g_state.video_panel) {
         InvalidateRect(g_state.video_panel, nullptr, TRUE);
@@ -1122,6 +1166,9 @@ bool load_dat_path(HWND owner, const std::filesystem::path& path, bool dropped_f
         g_state.preview_superseded = 0;
         g_state.displayed_info_text.clear();
         g_state.last_info_update_time = {};
+        g_state.thumb_time_label_rect = {};
+        g_state.has_thumb_time_label_rect = false;
+        g_state.displayed_thumb_time_text.clear();
         set_enabled_after_load(!g_state.index.frames.empty());
         if (g_state.video_panel) {
             InvalidateRect(g_state.video_panel, nullptr, TRUE);
@@ -2080,8 +2127,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
 
     case WM_CTLCOLORSTATIC: {
         HDC hdc = reinterpret_cast<HDC>(wparam);
-        SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, RGB(35, 43, 51));
+        if (reinterpret_cast<HWND>(lparam) == g_state.thumb_time_label) {
+            SetBkMode(hdc, OPAQUE);
+            SetBkColor(hdc, RGB(240, 240, 240));
+        } else {
+            SetBkMode(hdc, TRANSPARENT);
+        }
         return reinterpret_cast<LRESULT>(g_state.window_background_brush);
     }
 
