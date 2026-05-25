@@ -348,7 +348,8 @@ int details_panel_width_for_client_width(int client_width) {
 
 int minimum_video_width_for_controls() {
     constexpr int button_width = 104;
-    return button_width + 8 + button_width + 8 + button_width + 16 + button_width + 8 + button_width;
+    constexpr int button_gap = 8;
+    return button_width * 5 + button_gap * 4;
 }
 
 int client_width_for_video_width(int video_width, bool details_visible) {
@@ -1916,6 +1917,7 @@ void layout_controls(HWND hwnd) {
     const int header_height = 0;
     const int file_row_height = 22;
     const int button_width = 104;
+    const int button_gap = 8;
     const int open_button_width = button_width;
     const int play_button_width = button_width;
     const int speed_button_width = button_width;
@@ -1956,11 +1958,20 @@ void layout_controls(HWND hwnd) {
     MoveWindow(g_state.current_time_label, padding, timeline_top + 4, time_label_width, 20, TRUE);
     MoveWindow(g_state.timeline, padding + time_label_width + 6, timeline_top, video_width - time_label_width * 2 - 12, trackbar_height, TRUE);
     MoveWindow(g_state.total_time_label, padding + video_width - time_label_width, timeline_top + 4, time_label_width, 20, TRUE);
-    MoveWindow(g_state.open_button, padding, controls_top, open_button_width, button_height, TRUE);
-    MoveWindow(g_state.play_button, padding + open_button_width + 8, controls_top, play_button_width, button_height, TRUE);
-    MoveWindow(g_state.speed_button, padding + open_button_width + 8 + play_button_width + 8, controls_top, speed_button_width, button_height, TRUE);
-    MoveWindow(g_state.actual_size_button, padding + video_width - actual_size_button_width, controls_top, actual_size_button_width, button_height, TRUE);
-    MoveWindow(g_state.details_toggle_button, padding + video_width - actual_size_button_width - details_toggle_button_width - 8, controls_top, details_toggle_button_width, button_height, TRUE);
+    const int button_group_width =
+        open_button_width + actual_size_button_width + play_button_width + speed_button_width + details_toggle_button_width +
+        button_gap * 4;
+    const int button_group_left = padding + std::max(0, (video_width - button_group_width) / 2);
+    int button_left = button_group_left;
+    MoveWindow(g_state.open_button, button_left, controls_top, open_button_width, button_height, TRUE);
+    button_left += open_button_width + button_gap;
+    MoveWindow(g_state.actual_size_button, button_left, controls_top, actual_size_button_width, button_height, TRUE);
+    button_left += actual_size_button_width + button_gap;
+    MoveWindow(g_state.play_button, button_left, controls_top, play_button_width, button_height, TRUE);
+    button_left += play_button_width + button_gap;
+    MoveWindow(g_state.speed_button, button_left, controls_top, speed_button_width, button_height, TRUE);
+    button_left += speed_button_width + button_gap;
+    MoveWindow(g_state.details_toggle_button, button_left, controls_top, details_toggle_button_width, button_height, TRUE);
     if (g_state.details_visible) {
         MoveWindow(g_state.details_group, details_left, content_top, details_width, content_height, TRUE);
         MoveWindow(g_state.info_label, details_inner_left, details_inner_top, details_inner_width, details_text_height, TRUE);
