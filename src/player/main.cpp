@@ -5,6 +5,9 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <objidl.h>
+#include <propidl.h>
+#include <gdiplus.h>
 #include <shellapi.h>
 
 #include <algorithm>
@@ -130,6 +133,7 @@ struct PlayerState {
     HWND status_label = nullptr;
     HFONT ui_font = nullptr;
     HBRUSH window_background_brush = nullptr;
+    ULONG_PTR gdiplus_token = 0;
     dat_player::DatFrameIndex index;
     std::filesystem::path loaded_path;
     std::wstring decode_test_text;
@@ -1129,19 +1133,21 @@ LRESULT CALLBACK integrity_dot_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         GetClientRect(hwnd, &rect);
 
         FillRect(hdc, &rect, g_state.window_background_brush);
-        const int dot_width = rect.right - rect.left;
-        const int dot_height = rect.bottom - rect.top;
-        const int diameter = std::max(6, std::min(dot_width, dot_height) - 6);
-        const int left = (dot_width - diameter) / 2;
-        const int top = (dot_height - diameter) / 2;
+        Gdiplus::Graphics graphics(hdc);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        const float dot_width = static_cast<float>(rect.right - rect.left);
+        const float dot_height = static_cast<float>(rect.bottom - rect.top);
+        const float diameter = std::max(6.0f, std::min(dot_width, dot_height) - 6.0f);
+        const float left = (dot_width - diameter) * 0.5f;
+        const float top = (dot_height - diameter) * 0.5f;
         const COLORREF color = integrity_dot_color();
-        HBRUSH dot_brush = CreateSolidBrush(color);
-        HGDIOBJ old_brush = SelectObject(hdc, dot_brush);
-        HGDIOBJ old_pen = SelectObject(hdc, GetStockObject(NULL_PEN));
-        Ellipse(hdc, left, top, left + diameter, top + diameter);
-        SelectObject(hdc, old_pen);
-        SelectObject(hdc, old_brush);
-        DeleteObject(dot_brush);
+        Gdiplus::SolidBrush dot_brush(Gdiplus::Color(
+            255,
+            GetRValue(color),
+            GetGValue(color),
+            GetBValue(color)));
+        graphics.FillEllipse(&dot_brush, Gdiplus::RectF(left, top, diameter, diameter));
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -3137,6 +3143,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     controls.dwICC = ICC_BAR_CLASSES;
     InitCommonControlsEx(&controls);
 
+    Gdiplus::GdiplusStartupInput gdiplus_input;
+    if (Gdiplus::GdiplusStartup(&g_state.gdiplus_token, &gdiplus_input, nullptr) != Gdiplus::Ok) {
+        MessageBoxW(nullptr, L"Unable to initialize DAT Player graphics.", L"DAT Player", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
     g_state.window_background_brush = CreateSolidBrush(RGB(240, 240, 240));
 
     const wchar_t class_name[] = L"DATPlayerShellWindow";
@@ -3159,6 +3171,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     if (!RegisterClassExW(&window_class)) {
         MessageBoxW(nullptr, L"Unable to register DAT Player window class.", L"DAT Player", MB_OK | MB_ICONERROR);
+        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
         return 1;
     }
 
@@ -3173,6 +3186,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     if (!RegisterClassExW(&integrity_dot_class)) {
         MessageBoxW(nullptr, L"Unable to register DAT Player status indicator.", L"DAT Player", MB_OK | MB_ICONERROR);
+        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
         return 1;
     }
 
@@ -3187,6 +3201,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     if (!RegisterClassExW(&details_panel_class)) {
         MessageBoxW(nullptr, L"Unable to register DAT Player details panel.", L"DAT Player", MB_OK | MB_ICONERROR);
+        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
         return 1;
     }
 
@@ -3201,6 +3216,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     if (!RegisterClassExW(&video_class)) {
         MessageBoxW(nullptr, L"Unable to register DAT Player video panel.", L"DAT Player", MB_OK | MB_ICONERROR);
+        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
         return 1;
     }
 
@@ -3220,6 +3236,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     if (!hwnd) {
         MessageBoxW(nullptr, L"Unable to create DAT Player window.", L"DAT Player", MB_OK | MB_ICONERROR);
+        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
         return 1;
     }
 
@@ -3230,6 +3247,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
         TranslateMessage(&message);
         DispatchMessageW(&message);
+    }
+
+    if (g_state.gdiplus_token != 0) {
+        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
+        g_state.gdiplus_token = 0;
     }
 
     return static_cast<int>(message.wParam);

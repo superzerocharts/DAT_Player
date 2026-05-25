@@ -140,6 +140,7 @@ if(WIN32)
             dat_playback
             comctl32
             comdlg32
+            gdiplus
             shell32)
 
     target_compile_definitions(dat_player
