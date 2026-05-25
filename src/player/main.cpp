@@ -63,8 +63,11 @@ struct UiPlaybackFrame {
     std::uint64_t frames_decoded = 0;
     std::uint64_t late_frames = 0;
     double effective_fps = 0.0;
+    double target_interval_ms = 0.0;
     double frame_interval_ms = 0.0;
+    double scheduled_sleep_ms = 0.0;
     double convert_ms = 0.0;
+    std::uint64_t clock_reanchors = 0;
     std::chrono::steady_clock::time_point posted_at{};
     bool seek_frame = false;
 };
@@ -132,8 +135,12 @@ struct PlayerState {
     std::uint64_t frames_rendered = 0;
     std::uint64_t frames_decoded = 0;
     std::uint64_t late_frames = 0;
+    std::uint64_t clock_reanchors = 0;
     double effective_playback_fps = 0.0;
+    double target_frame_interval_ms = 0.0;
     double frame_interval_ms = 0.0;
+    double average_scheduled_sleep_ms = 0.0;
+    double max_scheduled_sleep_ms = 0.0;
     double recent_frame_interval_ms = 0.0;
     double max_recent_frame_interval_ms = 0.0;
     double average_ui_delay_ms = 0.0;
@@ -190,6 +197,16 @@ std::wstring widen(const std::string& value) {
 
 std::wstring format_double(double value, int precision) {
     if (value <= 0.0) {
+        return L"n/a";
+    }
+
+    std::wostringstream stream;
+    stream << std::fixed << std::setprecision(precision) << value;
+    return stream.str();
+}
+
+std::wstring format_nonnegative_double(double value, int precision) {
+    if (value < 0.0) {
         return L"n/a";
     }
 
@@ -884,8 +901,12 @@ void reset_loaded_state() {
     g_state.frames_rendered = 0;
     g_state.frames_decoded = 0;
     g_state.late_frames = 0;
+    g_state.clock_reanchors = 0;
     g_state.effective_playback_fps = 0.0;
+    g_state.target_frame_interval_ms = 0.0;
     g_state.frame_interval_ms = 0.0;
+    g_state.average_scheduled_sleep_ms = 0.0;
+    g_state.max_scheduled_sleep_ms = 0.0;
     g_state.recent_frame_interval_ms = 0.0;
     g_state.max_recent_frame_interval_ms = 0.0;
     g_state.average_ui_delay_ms = 0.0;
@@ -969,8 +990,12 @@ bool load_dat_path(HWND owner, const std::filesystem::path& path, bool dropped_f
         g_state.frames_rendered = 0;
         g_state.frames_decoded = 0;
         g_state.late_frames = 0;
+        g_state.clock_reanchors = 0;
         g_state.effective_playback_fps = 0.0;
+        g_state.target_frame_interval_ms = 0.0;
         g_state.frame_interval_ms = 0.0;
+        g_state.average_scheduled_sleep_ms = 0.0;
+        g_state.max_scheduled_sleep_ms = 0.0;
         g_state.recent_frame_interval_ms = 0.0;
         g_state.max_recent_frame_interval_ms = 0.0;
         g_state.average_ui_delay_ms = 0.0;
@@ -1167,10 +1192,14 @@ std::wstring format_playback_diagnostics(const std::wstring& state) {
          << L"Frames decoded: " << g_state.frames_decoded << L"\r\n"
          << L"Frames rendered: " << g_state.frames_rendered << L"\r\n"
          << L"Late frames: " << g_state.late_frames << L"\r\n"
+         << L"Clock re-anchors: " << g_state.clock_reanchors << L"\r\n"
          << L"Speed: " << playback_speed_label() << L"\r\n"
          << L"Target FPS: " << format_double(playback_fps() * playback_speed_multiplier(), 2) << L"\r\n"
          << L"Actual FPS: " << format_double(g_state.effective_playback_fps, 2) << L"\r\n"
+         << L"Target frame interval: " << format_double(g_state.target_frame_interval_ms, 2) << L" ms\r\n"
          << L"Worker interval: " << format_double(g_state.frame_interval_ms, 2) << L" ms\r\n"
+         << L"Scheduled sleep avg/max: " << format_nonnegative_double(g_state.average_scheduled_sleep_ms, 2)
+         << L" / " << format_nonnegative_double(g_state.max_scheduled_sleep_ms, 2) << L" ms\r\n"
          << L"UI interval avg/max: " << format_double(g_state.recent_frame_interval_ms, 2)
          << L" / " << format_double(g_state.max_recent_frame_interval_ms, 2) << L" ms\r\n"
          << L"UI post delay avg/max: " << format_double(g_state.average_ui_delay_ms, 2)
@@ -1394,8 +1423,12 @@ void start_forward_playback() {
     g_state.frames_rendered = 0;
     g_state.frames_decoded = 0;
     g_state.late_frames = 0;
+    g_state.clock_reanchors = 0;
     g_state.effective_playback_fps = 0.0;
-    g_state.frame_interval_ms = 1000.0 / (playback_fps() * playback_speed_multiplier());
+    g_state.target_frame_interval_ms = 1000.0 / (playback_fps() * playback_speed_multiplier());
+    g_state.frame_interval_ms = g_state.target_frame_interval_ms;
+    g_state.average_scheduled_sleep_ms = 0.0;
+    g_state.max_scheduled_sleep_ms = 0.0;
     g_state.recent_frame_interval_ms = 0.0;
     g_state.max_recent_frame_interval_ms = 0.0;
     g_state.average_ui_delay_ms = 0.0;
@@ -1428,12 +1461,14 @@ void start_forward_playback() {
         options.start_frame = start_frame;
         options.fallback_fps = fallback_fps;
 
-        auto playback_started = std::chrono::steady_clock::now();
-        auto last_post_time = playback_started;
+        auto anchor_time = std::chrono::steady_clock::now();
+        auto last_post_time = anchor_time;
+        std::uint64_t anchor_frame = start_frame;
         bool first_frame = true;
         std::uint64_t local_timing_generation = timing_generation;
         std::uint64_t rendered_callbacks = 0;
         std::uint64_t late_frames = 0;
+        std::uint64_t clock_reanchors = 0;
 
         const auto result = tester.play_forward(path, index, options, [&](dat_player::playback::ForwardPlaybackFrame&& frame) {
             if (g_state.stop_playback_requested || g_state.playback_generation.load() != generation) {
@@ -1442,23 +1477,44 @@ void start_forward_playback() {
 
             double speed = playback_speed_multiplier_from_index(g_state.playback_speed_index.load());
             double target_interval_ms = fallback_interval_ms / std::max(1.0, speed);
+            auto now = std::chrono::steady_clock::now();
             const auto current_timing_generation = g_state.playback_timing_generation.load();
             if (current_timing_generation != local_timing_generation) {
                 local_timing_generation = current_timing_generation;
-                playback_started = std::chrono::steady_clock::now();
-                last_post_time = playback_started;
+                anchor_time = now;
+                anchor_frame = frame.frame_index;
+                last_post_time = now;
                 rendered_callbacks = 0;
-                first_frame = true;
+                ++clock_reanchors;
+                first_frame = false;
             }
-            auto target_post_time = last_post_time;
+
+            auto target_post_time = now;
             if (first_frame) {
-                playback_started = std::chrono::steady_clock::now();
-                last_post_time = playback_started;
-                target_post_time = last_post_time;
+                anchor_time = now;
+                anchor_frame = frame.frame_index;
+                last_post_time = now;
                 first_frame = false;
             } else {
-                target_post_time = last_post_time + std::chrono::microseconds(
-                    static_cast<long long>(std::max(1.0, target_interval_ms) * 1000.0));
+                const std::uint64_t frame_delta = frame.frame_index >= anchor_frame
+                    ? frame.frame_index - anchor_frame
+                    : 0;
+                target_post_time = anchor_time + std::chrono::microseconds(
+                    static_cast<long long>(static_cast<double>(frame_delta) * target_interval_ms * 1000.0));
+                const double lateness_ms = std::chrono::duration<double, std::milli>(now - target_post_time).count();
+                const double reanchor_threshold_ms = std::max(120.0, target_interval_ms * 4.0);
+                if (lateness_ms > reanchor_threshold_ms) {
+                    anchor_time = now;
+                    anchor_frame = frame.frame_index;
+                    target_post_time = now;
+                    ++clock_reanchors;
+                }
+            }
+
+            double scheduled_sleep_ms = std::max(
+                0.0,
+                std::chrono::duration<double, std::milli>(target_post_time - now).count());
+            if (scheduled_sleep_ms > 0.0) {
                 while (!g_state.stop_playback_requested &&
                        g_state.playback_generation.load() == generation &&
                        g_state.playback_timing_generation.load() == local_timing_generation &&
@@ -1471,23 +1527,26 @@ void start_forward_playback() {
                 return false;
             }
 
-            const auto now = std::chrono::steady_clock::now();
+            now = std::chrono::steady_clock::now();
             if (g_state.playback_timing_generation.load() != local_timing_generation) {
                 local_timing_generation = g_state.playback_timing_generation.load();
                 speed = playback_speed_multiplier_from_index(g_state.playback_speed_index.load());
                 target_interval_ms = fallback_interval_ms / std::max(1.0, speed);
-                playback_started = now;
+                anchor_time = now;
+                anchor_frame = frame.frame_index;
                 last_post_time = now;
                 target_post_time = now;
+                scheduled_sleep_ms = 0.0;
                 rendered_callbacks = 0;
+                ++clock_reanchors;
             }
             if (now > target_post_time + std::chrono::milliseconds(20)) {
                 ++late_frames;
             }
             ++rendered_callbacks;
-            const double elapsed_seconds = std::chrono::duration<double>(now - playback_started).count();
-            const double effective_fps = elapsed_seconds > 0.0
-                ? static_cast<double>(rendered_callbacks) / elapsed_seconds
+            const double elapsed_seconds = std::chrono::duration<double>(now - anchor_time).count();
+            const double effective_fps = elapsed_seconds > 0.0 && rendered_callbacks > 1
+                ? static_cast<double>(rendered_callbacks - 1) / elapsed_seconds
                 : 0.0;
             const double frame_interval_ms = rendered_callbacks > 1
                 ? std::chrono::duration<double, std::milli>(now - last_post_time).count()
@@ -1502,8 +1561,11 @@ void start_forward_playback() {
             ui_frame->frames_submitted = frame.frames_submitted;
             ui_frame->frames_decoded = frame.frames_decoded;
             ui_frame->late_frames = late_frames;
+            ui_frame->clock_reanchors = clock_reanchors;
             ui_frame->effective_fps = effective_fps;
+            ui_frame->target_interval_ms = target_interval_ms;
             ui_frame->frame_interval_ms = frame_interval_ms;
+            ui_frame->scheduled_sleep_ms = scheduled_sleep_ms;
             ui_frame->convert_ms = frame.convert_ms;
             ui_frame->posted_at = std::chrono::steady_clock::now();
             if (!PostMessageW(hwnd, kPlaybackFrameMessage, 0, reinterpret_cast<LPARAM>(ui_frame.release()))) {
@@ -1656,7 +1718,10 @@ void cycle_playback_speed() {
     g_state.max_recent_frame_interval_ms = 0.0;
     g_state.average_ui_delay_ms = 0.0;
     g_state.max_ui_delay_ms = 0.0;
-    g_state.frame_interval_ms = 1000.0 / (playback_fps() * playback_speed_multiplier());
+    g_state.target_frame_interval_ms = 1000.0 / (playback_fps() * playback_speed_multiplier());
+    g_state.frame_interval_ms = g_state.target_frame_interval_ms;
+    g_state.average_scheduled_sleep_ms = 0.0;
+    g_state.max_scheduled_sleep_ms = 0.0;
     update_speed_button();
     update_info();
     std::wostringstream status;
@@ -2041,8 +2106,15 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 g_state.pending_seek_frame = 0;
             } else {
                 g_state.late_frames = frame->late_frames;
+                g_state.clock_reanchors = frame->clock_reanchors;
                 g_state.effective_playback_fps = frame->effective_fps;
+                g_state.target_frame_interval_ms = frame->target_interval_ms;
                 g_state.frame_interval_ms = frame->frame_interval_ms;
+                g_state.average_scheduled_sleep_ms =
+                    (g_state.average_scheduled_sleep_ms <= 0.0 && g_state.max_scheduled_sleep_ms <= 0.0)
+                    ? frame->scheduled_sleep_ms
+                    : (g_state.average_scheduled_sleep_ms * 0.9 + frame->scheduled_sleep_ms * 0.1);
+                g_state.max_scheduled_sleep_ms = std::max(g_state.max_scheduled_sleep_ms, frame->scheduled_sleep_ms);
                 if (g_state.last_ui_frame_time.time_since_epoch().count() != 0) {
                     const double ui_interval_ms = std::chrono::duration<double, std::milli>(
                         handled_at - g_state.last_ui_frame_time).count();
