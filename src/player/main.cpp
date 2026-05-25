@@ -126,6 +126,7 @@ struct PlayerState {
     std::atomic_bool stop_playback_requested = false;
     std::atomic_bool stop_preview_requested = false;
     std::atomic<int> playback_speed_index = 0;
+    std::atomic<std::uint64_t> playback_timing_generation = 0;
     std::atomic<std::uint64_t> playback_generation = 0;
     std::atomic<std::uint64_t> preview_generation = 0;
     std::uint64_t frames_rendered = 0;
@@ -1201,7 +1202,7 @@ std::wstring format_seek_diagnostics(
          << L"Requested: " << frame_time_label(requested_frame) << L"\r\n"
          << L"Keyframe used: " << (keyframe_frame + 1) << L"\r\n"
          << L"Frames decoded during seek: " << frames_decoded << L"\r\n"
-         << L"Resume after release: " << (resume_after_seek ? L"yes" : L"no") << L"\r\n"
+         << L"Resume after seek: " << (resume_after_seek ? L"yes" : L"no") << L"\r\n"
          << L"Committed current frame: " << (g_state.current_frame + 1) << L" / " << frame_count() << L"\r\n";
     if (!result_text.empty()) {
         text << L"Result: " << result_text;
@@ -1419,8 +1420,9 @@ void start_forward_playback() {
     const auto start_frame = g_state.current_frame;
     const double fallback_fps = playback_fps();
     const double fallback_interval_ms = 1000.0 / fallback_fps;
+    const std::uint64_t timing_generation = g_state.playback_timing_generation.load();
 
-    g_state.playback_thread = std::thread([hwnd, path, index, start_frame, fallback_fps, fallback_interval_ms, generation]() {
+    g_state.playback_thread = std::thread([hwnd, path, index, start_frame, fallback_fps, fallback_interval_ms, generation, timing_generation]() {
         dat_player::playback::H264DecodeSmokeTester tester;
         dat_player::playback::ForwardPlaybackOptions options;
         options.start_frame = start_frame;
@@ -1429,6 +1431,7 @@ void start_forward_playback() {
         auto playback_started = std::chrono::steady_clock::now();
         auto last_post_time = playback_started;
         bool first_frame = true;
+        std::uint64_t local_timing_generation = timing_generation;
         std::uint64_t rendered_callbacks = 0;
         std::uint64_t late_frames = 0;
 
@@ -1437,8 +1440,16 @@ void start_forward_playback() {
                 return false;
             }
 
-            const double speed = playback_speed_multiplier_from_index(g_state.playback_speed_index.load());
-            const double target_interval_ms = fallback_interval_ms / std::max(1.0, speed);
+            double speed = playback_speed_multiplier_from_index(g_state.playback_speed_index.load());
+            double target_interval_ms = fallback_interval_ms / std::max(1.0, speed);
+            const auto current_timing_generation = g_state.playback_timing_generation.load();
+            if (current_timing_generation != local_timing_generation) {
+                local_timing_generation = current_timing_generation;
+                playback_started = std::chrono::steady_clock::now();
+                last_post_time = playback_started;
+                rendered_callbacks = 0;
+                first_frame = true;
+            }
             auto target_post_time = last_post_time;
             if (first_frame) {
                 playback_started = std::chrono::steady_clock::now();
@@ -1450,6 +1461,7 @@ void start_forward_playback() {
                     static_cast<long long>(std::max(1.0, target_interval_ms) * 1000.0));
                 while (!g_state.stop_playback_requested &&
                        g_state.playback_generation.load() == generation &&
+                       g_state.playback_timing_generation.load() == local_timing_generation &&
                        std::chrono::steady_clock::now() + std::chrono::milliseconds(1) < target_post_time) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
@@ -1460,6 +1472,15 @@ void start_forward_playback() {
             }
 
             const auto now = std::chrono::steady_clock::now();
+            if (g_state.playback_timing_generation.load() != local_timing_generation) {
+                local_timing_generation = g_state.playback_timing_generation.load();
+                speed = playback_speed_multiplier_from_index(g_state.playback_speed_index.load());
+                target_interval_ms = fallback_interval_ms / std::max(1.0, speed);
+                playback_started = now;
+                last_post_time = now;
+                target_post_time = now;
+                rendered_callbacks = 0;
+            }
             if (now > target_post_time + std::chrono::milliseconds(20)) {
                 ++late_frames;
             }
@@ -1629,6 +1650,13 @@ void toggle_details() {
 void cycle_playback_speed() {
     const int next_index = (std::clamp(g_state.playback_speed_index.load(), 0, 4) + 1) % 5;
     g_state.playback_speed_index.store(next_index);
+    ++g_state.playback_timing_generation;
+    g_state.last_ui_frame_time = {};
+    g_state.recent_frame_interval_ms = 0.0;
+    g_state.max_recent_frame_interval_ms = 0.0;
+    g_state.average_ui_delay_ms = 0.0;
+    g_state.max_ui_delay_ms = 0.0;
+    g_state.frame_interval_ms = 1000.0 / (playback_fps() * playback_speed_multiplier());
     update_speed_button();
     update_info();
     std::wostringstream status;
@@ -1974,6 +2002,9 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 }
             }
 
+            const bool resume_after_click_seek =
+                g_state.playing ||
+                (g_state.seeking && g_state.pending_seek_resume_after_completion);
             if (g_state.playing || g_state.seeking) {
                 stop_playback();
             }
@@ -1981,7 +2012,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             const auto target = frame_from_timeline_position(position);
             g_state.has_timeline_preview = false;
             stop_preview(false);
-            start_seek_to_frame(target, false);
+            start_seek_to_frame(target, resume_after_click_seek);
             return 0;
         }
         break;
