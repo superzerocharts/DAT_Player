@@ -137,6 +137,8 @@ Rendered BGRA output can be dumped to a BMP for visual inspection:
 - True recording timestamp timebase is `10,000,000` ticks per second
 - Legacy fallback timestamp timebase is `39062.5` units per second
 
-Optional `.sef2` sidecars can provide recording start/end, camera, and device
-metadata. The player does not require sidecars and does not modify source DAT or
-sidecar files.
+Optional `.sef2` sidecars can provide recording start/end, camera, device, and
+timezone/display-offset metadata. The player does not require sidecars and does
+not modify source DAT or sidecar files. When only DAT frame ticks are available,
+Details can show the raw unadjusted DAT timestamps, but the main timeline stays
+on elapsed time to avoid implying archive-local wall-clock accuracy.

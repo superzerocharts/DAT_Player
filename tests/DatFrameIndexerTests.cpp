@@ -293,6 +293,7 @@ void marker_minus_17_dotnet_ticks_drive_timing() {
     require(std::fabs(index.summary.duration_seconds - 2.0) < 0.0001, "dotnet duration estimate mismatch");
     require(std::fabs(index.summary.estimated_fps - 1.0) < 0.0001, "dotnet fps estimate mismatch");
     require(index.summary.recording_metadata.confidence == RecordingMetadataConfidence::Medium, "DAT-only confidence should be medium");
+    require(!index.summary.recording_metadata.sidecar.has_display_offset_minutes, "DAT-only metadata should not claim archive display offset");
 }
 
 void marker_minus_16_legacy_timing_remains_fallback() {
