@@ -53,6 +53,7 @@ constexpr UINT kPreviewFinishedMessage = WM_APP + 5;
 constexpr UINT_PTR kTimelinePreviewTimerId = 42;
 constexpr int kTrackbarMax = 10000;
 constexpr auto kPreviewThrottle = std::chrono::milliseconds(200);
+constexpr auto kDiagnosticsUpdateThrottle = std::chrono::milliseconds(250);
 
 struct UiPlaybackFrame {
     dat_player::playback::BgraVideoFrame frame;
@@ -123,6 +124,7 @@ struct PlayerState {
     dat_player::DatFrameIndex index;
     std::filesystem::path loaded_path;
     std::wstring decode_smoke_text;
+    std::wstring displayed_info_text;
     dat_player::playback::BgraVideoFrame rendered_frame;
     std::thread playback_thread;
     std::thread preview_thread;
@@ -151,6 +153,7 @@ struct PlayerState {
     double average_paint_ms = 0.0;
     double max_paint_ms = 0.0;
     std::chrono::steady_clock::time_point last_ui_frame_time{};
+    std::chrono::steady_clock::time_point last_info_update_time{};
     std::uint64_t current_frame = 0;
     bool timeline_dragging = false;
     bool resume_after_timeline_drag = false;
@@ -483,6 +486,25 @@ void set_status(const std::wstring& text) {
     }
 }
 
+bool set_window_text_if_changed(HWND window, const std::wstring& text) {
+    if (!window) {
+        return false;
+    }
+
+    const int length = GetWindowTextLengthW(window);
+    std::wstring current(static_cast<std::size_t>(std::max(0, length)) + 1, L'\0');
+    if (length > 0) {
+        GetWindowTextW(window, current.data(), length + 1);
+    }
+    current.resize(static_cast<std::size_t>(std::max(0, length)));
+    if (current == text) {
+        return false;
+    }
+
+    SetWindowTextW(window, text.c_str());
+    return true;
+}
+
 void update_play_button() {
     if (g_state.play_button) {
         const bool pause_would_cancel_scrub_resume =
@@ -550,11 +572,11 @@ void update_timeline() {
     }
     if (g_state.current_time_label) {
         const auto text = format_clock_time(seconds_for_frame(display_frame));
-        SetWindowTextW(g_state.current_time_label, text.c_str());
+        set_window_text_if_changed(g_state.current_time_label, text);
     }
     if (g_state.total_time_label) {
         const auto text = format_clock_time(total_duration_seconds());
-        SetWindowTextW(g_state.total_time_label, text.c_str());
+        set_window_text_if_changed(g_state.total_time_label, text);
     }
 }
 
@@ -565,7 +587,7 @@ void update_file_path_text() {
     const std::wstring text = g_state.loaded_path.empty()
         ? L"No .dat file selected"
         : g_state.loaded_path.wstring();
-    SetWindowTextW(g_state.file_path_edit, text.c_str());
+    set_window_text_if_changed(g_state.file_path_edit, text);
 }
 
 void arm_preview_timer(HWND hwnd, std::chrono::milliseconds delay) {
@@ -874,11 +896,30 @@ std::wstring build_info_text() {
     return text.str();
 }
 
-void update_info() {
-    const auto info = build_info_text();
-    SetWindowTextW(g_state.info_label, info.c_str());
+void update_info(bool force = false) {
     update_file_path_text();
     update_timeline();
+    if (!g_state.info_label || !g_state.details_visible) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (!force && g_state.last_info_update_time.time_since_epoch().count() != 0 &&
+        now - g_state.last_info_update_time < kDiagnosticsUpdateThrottle) {
+        return;
+    }
+
+    const auto info = build_info_text();
+    g_state.last_info_update_time = now;
+    if (info == g_state.displayed_info_text) {
+        return;
+    }
+
+    SendMessageW(g_state.info_label, WM_SETREDRAW, FALSE, 0);
+    SetWindowTextW(g_state.info_label, info.c_str());
+    SendMessageW(g_state.info_label, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(g_state.info_label, nullptr, FALSE);
+    g_state.displayed_info_text = info;
 }
 
 void set_enabled_after_load(bool enabled) {
@@ -935,11 +976,13 @@ void reset_loaded_state() {
     g_state.preview_rendered_frame = 0;
     g_state.preview_frames_decoded = 0;
     g_state.preview_superseded = 0;
+    g_state.displayed_info_text.clear();
+    g_state.last_info_update_time = {};
     set_enabled_after_load(false);
     if (g_state.video_panel) {
         InvalidateRect(g_state.video_panel, nullptr, TRUE);
     }
-    update_info();
+    update_info(true);
 }
 
 std::filesystem::path ask_for_dat_file(HWND owner) {
@@ -1024,11 +1067,13 @@ bool load_dat_path(HWND owner, const std::filesystem::path& path, bool dropped_f
         g_state.preview_rendered_frame = 0;
         g_state.preview_frames_decoded = 0;
         g_state.preview_superseded = 0;
+        g_state.displayed_info_text.clear();
+        g_state.last_info_update_time = {};
         set_enabled_after_load(!g_state.index.frames.empty());
         if (g_state.video_panel) {
             InvalidateRect(g_state.video_panel, nullptr, TRUE);
         }
-        update_info();
+        update_info(true);
 
         if (g_state.index.frames.empty()) {
             reset_loaded_state();
@@ -1121,7 +1166,7 @@ void run_decode_smoke_test() {
     dat_player::playback::H264DecodeSmokeTester tester;
     const auto result = tester.run(g_state.loaded_path, g_state.index);
     g_state.decode_smoke_text = format_decode_smoke_result(result);
-    update_info();
+    update_info(true);
     set_status(result.decoded_any_frame
         ? (was_playing ? L"Playback stopped; decode smoke test produced decoded samples." : L"Decode smoke test produced decoded samples.")
         : L"Decode smoke test did not produce decoded samples.");
@@ -1176,7 +1221,7 @@ void run_first_frame_render_smoke_test() {
     if (g_state.video_panel) {
         InvalidateRect(g_state.video_panel, nullptr, TRUE);
     }
-    update_info();
+    update_info(true);
     set_status(result.frame_available
         ? (was_playing ? L"Playback stopped; first decoded frame rendered." : L"First decoded frame rendered.")
         : L"First-frame render smoke test failed.");
@@ -1272,7 +1317,7 @@ void start_seek_to_frame(std::uint64_t target_frame, bool resume_after_seek) {
     g_state.pending_seek_resume_generation = generation;
     update_play_button();
     g_state.decode_smoke_text = format_seek_diagnostics(L"seeking", clamped_target, keyframe, 0, L"", resume_after_seek);
-    update_info();
+    update_info(true);
     const auto seek_status = L"Seeking to " + frame_time_label(clamped_target) + L"...";
     set_status(seek_status);
 
@@ -1445,7 +1490,7 @@ void start_forward_playback() {
     update_play_button();
     set_status(L"Starting forward playback at Speed: " + playback_speed_label() + L".");
     g_state.decode_smoke_text = format_playback_diagnostics(L"starting");
-    update_info();
+    update_info(true);
 
     const HWND hwnd = g_state.hwnd;
     const auto path = g_state.loaded_path;
@@ -1599,7 +1644,7 @@ void toggle_playback() {
                 nearest_previous_keyframe(g_state.has_timeline_preview ? g_state.timeline_preview_frame : g_state.current_frame),
                 0);
             update_play_button();
-            update_info();
+            update_info(true);
             set_status(L"Scrub resume canceled; release will keep playback paused.");
         }
         return;
@@ -1615,7 +1660,7 @@ void toggle_playback() {
                 nearest_previous_keyframe(g_state.has_pending_seek ? g_state.pending_seek_frame : g_state.current_frame),
                 0);
             update_play_button();
-            update_info();
+            update_info(true);
             set_status(L"Seek will complete paused.");
         }
         return;
@@ -1624,7 +1669,7 @@ void toggle_playback() {
     if (g_state.playing) {
         stop_playback();
         g_state.decode_smoke_text = format_playback_diagnostics(L"paused");
-        update_info();
+        update_info(true);
         set_status(L"Playback paused.");
     } else {
         start_forward_playback();
@@ -1698,6 +1743,7 @@ void toggle_details() {
     update_details_toggle_button();
     SetWindowPos(g_state.hwnd, nullptr, x, y, desired_width, desired_height, SWP_NOZORDER | SWP_NOACTIVATE);
     layout_controls(g_state.hwnd);
+    update_info(show_details);
     InvalidateRect(g_state.hwnd, nullptr, TRUE);
     if (g_state.video_panel) {
         InvalidateRect(g_state.video_panel, nullptr, TRUE);
@@ -1723,7 +1769,7 @@ void cycle_playback_speed() {
     g_state.average_scheduled_sleep_ms = 0.0;
     g_state.max_scheduled_sleep_ms = 0.0;
     update_speed_button();
-    update_info();
+    update_info(true);
     std::wostringstream status;
     status << L"Speed: " << playback_speed_label();
     if (g_state.playing) {
@@ -1952,7 +1998,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         SendMessageW(g_state.timeline, TBM_SETRANGE, TRUE, MAKELPARAM(0, kTrackbarMax));
         SendMessageW(g_state.timeline, TBM_SETPAGESIZE, 0, 500);
         SendMessageW(g_state.timeline, TBM_SETLINESIZE, 0, 100);
-        update_info();
+        update_info(true);
         layout_controls(hwnd);
         return 0;
 
@@ -2032,7 +2078,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 g_state.has_timeline_preview = true;
                 if (g_state.current_time_label) {
                     const auto text = format_clock_time(seconds_for_frame(target));
-                    SetWindowTextW(g_state.current_time_label, text.c_str());
+                    set_window_text_if_changed(g_state.current_time_label, text);
                 }
                 g_state.decode_smoke_text = format_seek_diagnostics(
                     g_state.resume_after_timeline_drag ? L"dragging, will resume" : L"dragging",
@@ -2041,7 +2087,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                     0,
                     L"",
                     g_state.resume_after_timeline_drag);
-                SetWindowTextW(g_state.info_label, build_info_text().c_str());
+                update_info();
                 schedule_preview_for_frame(target);
                 set_status(L"Scrubbing preview. Release the timeline to commit seek.");
                 return 0;
@@ -2170,7 +2216,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         if (!playback_message->text.empty()) {
             g_state.decode_smoke_text += L"\r\nResult: " + playback_message->text;
         }
-        update_info();
+        update_info(true);
         set_status(completed ? L"Playback completed or reached decoder end." : L"Playback stopped.");
         return 0;
     }
@@ -2256,7 +2302,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             seek_message->frames_decoded,
             seek_message->text,
             resume_after_seek);
-        update_info();
+        update_info(true);
 
         if (resume_after_seek) {
             set_status(L"Seek completed; resuming playback.");
