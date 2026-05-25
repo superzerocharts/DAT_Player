@@ -325,14 +325,6 @@ std::wstring playback_speed_label() {
     return playback_speed_label(playback_speed_multiplier());
 }
 
-std::wstring playback_status_text() {
-    return L"Playing at " + playback_speed_label() + L".";
-}
-
-std::wstring paused_status_text() {
-    return L"Playback paused. Speed: " + playback_speed_label() + L".";
-}
-
 std::wstring next_speed_button_text() {
     switch (std::clamp(g_state.playback_speed_index.load(), 0, 4)) {
     case 0:
@@ -353,7 +345,8 @@ int details_panel_width_for_client_width(int client_width) {
 }
 
 int minimum_video_width_for_controls() {
-    return 104 + 8 + 70 + 16 + 112 + 8 + 112;
+    constexpr int button_width = 104;
+    return button_width + 8 + button_width + 16 + button_width + 8 + button_width;
 }
 
 int client_width_for_video_width(int video_width, bool details_visible) {
@@ -1090,7 +1083,7 @@ bool load_dat_path(HWND owner, const std::filesystem::path& path, bool dropped_f
                 : L"No valid H264/I264 frame records were found.");
             return false;
         } else {
-            set_status(L"Loaded index. Starting playback at " + playback_speed_label() + L".");
+            set_status(L"Loaded index. Starting playback...");
             start_forward_playback();
             return true;
         }
@@ -1496,7 +1489,7 @@ void start_forward_playback() {
     const std::uint64_t generation = ++g_state.playback_generation;
     g_state.playing = true;
     update_play_button();
-    set_status(L"Starting playback at " + playback_speed_label() + L".");
+    set_status(L"Starting forward playback at Speed: " + playback_speed_label() + L".");
     g_state.decode_smoke_text = format_playback_diagnostics(L"starting");
     update_info(true);
 
@@ -1678,7 +1671,7 @@ void toggle_playback() {
         stop_playback();
         g_state.decode_smoke_text = format_playback_diagnostics(L"paused");
         update_info(true);
-        set_status(paused_status_text());
+        set_status(L"Playback paused.");
     } else {
         start_forward_playback();
     }
@@ -1778,7 +1771,12 @@ void cycle_playback_speed() {
     g_state.max_scheduled_sleep_ms = 0.0;
     update_speed_button();
     update_info(true);
-    set_status(g_state.playing ? playback_status_text() : paused_status_text());
+    std::wostringstream status;
+    status << L"Speed: " << playback_speed_label();
+    if (g_state.playing) {
+        status << L" while playing.";
+    }
+    set_status(status.str());
 }
 
 void resize_to_actual_size() {
@@ -1795,7 +1793,7 @@ void resize_to_actual_size() {
     }
 
     const int padding = 14;
-    const int header_height = 56;
+    const int header_height = 0;
     const int file_row_height = 30;
     const int button_height = 32;
     const int timeline_height = 28;
@@ -1864,16 +1862,17 @@ void layout_controls(HWND hwnd) {
     GetClientRect(hwnd, &rect);
     const int width = rect.right - rect.left;
     const int padding = 14;
-    const int header_height = 56;
+    const int header_height = 0;
     const int file_row_height = 30;
     const int file_label_width = 64;
-    const int open_button_width = 110;
-    const int play_button_width = 104;
-    const int speed_button_width = 70;
-    const int actual_size_button_width = 112;
-    const int details_toggle_button_width = 112;
-    const int smoke_button_width = 132;
-    const int render_button_width = 132;
+    const int button_width = 104;
+    const int open_button_width = button_width;
+    const int play_button_width = button_width;
+    const int speed_button_width = button_width;
+    const int actual_size_button_width = button_width;
+    const int details_toggle_button_width = button_width;
+    const int smoke_button_width = button_width;
+    const int render_button_width = button_width;
     const int button_height = 32;
     const int timeline_height = 28;
     const int status_height = 24;
@@ -1897,7 +1896,8 @@ void layout_controls(HWND hwnd) {
     const int details_buttons_top = content_bottom - button_height - 12;
     const int details_text_height = std::max(80, details_buttons_top - details_inner_top - 10);
 
-    MoveWindow(g_state.brand_header, 0, 0, width, header_height, TRUE);
+    MoveWindow(g_state.brand_header, 0, 0, width, 0, TRUE);
+    ShowWindow(g_state.brand_header, SW_HIDE);
     MoveWindow(g_state.file_label, padding, file_top + 5, file_label_width, 22, TRUE);
     MoveWindow(g_state.file_path_edit, padding + file_label_width, file_top, std::max(80, width - padding * 3 - file_label_width - open_button_width), file_row_height, TRUE);
     MoveWindow(g_state.open_button, width - padding - open_button_width, file_top - 1, open_button_width, button_height, TRUE);
@@ -1944,7 +1944,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             DEFAULT_PITCH | FF_DONTCARE,
             L"Segoe UI");
 
-        g_state.brand_header = CreateWindowW(L"DATBrandHeader", L"", WS_CHILD | WS_VISIBLE,
+        g_state.brand_header = CreateWindowW(L"DATBrandHeader", L"", WS_CHILD,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBrandHeaderId)), nullptr, nullptr);
         g_state.file_label = CreateWindowW(L"STATIC", L"DAT file:", WS_CHILD | WS_VISIBLE | SS_LEFT,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFileLabelId)), nullptr, nullptr);
@@ -2193,7 +2193,12 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 InvalidateRect(g_state.video_panel, nullptr, FALSE);
             }
             update_info();
-            set_status(playback_status_text());
+            std::wostringstream status;
+            status << L"Playing frame " << (g_state.current_frame + 1) << L" / " << frame_count()
+                   << L" decoded=" << g_state.frames_decoded
+                   << L" rendered=" << g_state.frames_rendered
+                   << L" Speed: " << playback_speed_label();
+            set_status(status.str());
         }
         return 0;
     }
@@ -2215,7 +2220,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             g_state.decode_smoke_text += L"\r\nResult: " + playback_message->text;
         }
         update_info(true);
-        set_status(completed ? L"Playback completed or reached decoder end." : paused_status_text());
+        set_status(completed ? L"Playback completed or reached decoder end." : L"Playback stopped.");
         return 0;
     }
 
@@ -2303,10 +2308,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         update_info(true);
 
         if (resume_after_seek) {
-            set_status(L"Seek completed; resuming at " + playback_speed_label() + L".");
+            set_status(L"Seek completed; resuming playback.");
             start_forward_playback();
         } else {
-            set_status(seek_ok ? (L"Seek completed. Speed: " + playback_speed_label() + L".") : L"Seek failed; keeping last rendered frame.");
+            set_status(seek_ok ? L"Seek completed." : L"Seek failed; keeping last rendered frame.");
         }
         return 0;
     }
@@ -2410,8 +2415,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        900,
-        640,
+        860,
+        584,
         nullptr,
         nullptr,
         instance,
