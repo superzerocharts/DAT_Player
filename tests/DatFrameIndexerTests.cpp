@@ -316,7 +316,8 @@ void sef2_parser_extracts_recording_metadata() {
         "<root>"
         "<start>2026-05-20T04:25:16.5410000</start>"
         "<end>2026-05-20T04:30:14.7380000</end>"
-        "<channels><channel name=\"MjA1IENob2tlIFBvaW50\" manufacturer=\"AXIS\" model=\"AXIS Q1645 Network Camera\" /></channels>"
+        "<channels><channel name=\"MjA1IENob2tlIFBvaW50\" manufacturer=\"AXIS\" model=\"AXIS Q1645 Network Camera\" "
+        "timezone=\"AMDc8bz///8AaMRhCAAAAA==\" /></channels>"
         "</root>";
 
     const auto metadata = dat_player::parse_sef2_metadata_xml(xml);
@@ -326,6 +327,15 @@ void sef2_parser_extracts_recording_metadata() {
     require(metadata.camera_name == "205 Choke Point", "camera name should decode from base64");
     require(metadata.manufacturer == "AXIS", "manufacturer mismatch");
     require(metadata.model == "AXIS Q1645 Network Camera", "model mismatch");
+    require(metadata.has_display_offset_minutes, "display offset should be derived from timezone metadata");
+    require(metadata.display_offset_minutes == -420, "display offset should combine standard and daylight offsets");
+
+    std::uint64_t display_ticks = 0;
+    require(dat_player::offset_dotnet_ticks(metadata.start_ticks, metadata.display_offset_minutes, display_ticks), "display tick offset should apply");
+    dat_player::RecordingDateTimeParts parts;
+    require(dat_player::dotnet_ticks_to_parts(display_ticks + 5'000'000ULL, parts), "display ticks should decode");
+    require(parts.year == 2026 && parts.month == 5 && parts.day == 19, "display date should match archive-local date");
+    require(parts.hour == 21 && parts.minute == 25 && parts.second == 17, "display time should match archive-local time");
 }
 
 std::filesystem::path unique_temp_dir() {

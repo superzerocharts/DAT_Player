@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -503,6 +504,165 @@ std::wstring format_clock_time(double seconds) {
     return text.str();
 }
 
+bool recording_time_display_enabled() {
+    const auto& metadata = g_state.index.summary.recording_metadata;
+    if (metadata.confidence == dat_player::RecordingMetadataConfidence::None ||
+        metadata.confidence == dat_player::RecordingMetadataConfidence::Low) {
+        return false;
+    }
+    return metadata.has_dat_frame_ticks ||
+        (metadata.sidecar.has_start_ticks && metadata.sidecar.has_end_ticks);
+}
+
+bool recording_start_ticks(std::uint64_t& ticks) {
+    if (!recording_time_display_enabled()) {
+        return false;
+    }
+    const auto& metadata = g_state.index.summary.recording_metadata;
+    if (metadata.has_dat_frame_ticks) {
+        ticks = metadata.first_frame_ticks;
+        return true;
+    }
+    if (metadata.sidecar.has_start_ticks) {
+        ticks = metadata.sidecar.start_ticks;
+        return true;
+    }
+    return false;
+}
+
+bool recording_end_ticks(std::uint64_t& ticks) {
+    if (!recording_time_display_enabled()) {
+        return false;
+    }
+    const auto& metadata = g_state.index.summary.recording_metadata;
+    if (metadata.has_dat_frame_ticks) {
+        ticks = metadata.last_frame_ticks;
+        return true;
+    }
+    if (metadata.sidecar.has_end_ticks) {
+        ticks = metadata.sidecar.end_ticks;
+        return true;
+    }
+    return false;
+}
+
+bool recording_ticks_for_frame(std::uint64_t frame, std::uint64_t& ticks) {
+    if (!recording_time_display_enabled() || g_state.index.frames.empty()) {
+        return false;
+    }
+
+    const auto clamped = std::min<std::uint64_t>(frame, frame_count() - 1);
+    const auto& record = g_state.index.frames[static_cast<std::size_t>(clamped)];
+    if (record.has_recording_ticks) {
+        ticks = record.recording_ticks;
+        return true;
+    }
+
+    std::uint64_t start_ticks = 0;
+    std::uint64_t end_ticks = 0;
+    if (!recording_start_ticks(start_ticks)) {
+        return false;
+    }
+    if (recording_end_ticks(end_ticks) && end_ticks <= start_ticks) {
+        return false;
+    }
+
+    constexpr double ticks_per_second = 10'000'000.0;
+    const auto elapsed_ticks = static_cast<std::uint64_t>(std::max(0.0, seconds_for_frame(clamped)) * ticks_per_second + 0.5);
+    if (std::numeric_limits<std::uint64_t>::max() - start_ticks < elapsed_ticks) {
+        return false;
+    }
+    ticks = start_ticks + elapsed_ticks;
+    if (end_ticks != 0 && ticks > end_ticks) {
+        ticks = end_ticks;
+    }
+    return true;
+}
+
+bool display_parts_for_recording_ticks(std::uint64_t ticks, dat_player::RecordingDateTimeParts& parts) {
+    const auto& sidecar = g_state.index.summary.recording_metadata.sidecar;
+    std::uint64_t display_ticks = ticks;
+    if (sidecar.has_display_offset_minutes &&
+        !dat_player::offset_dotnet_ticks(ticks, sidecar.display_offset_minutes, display_ticks)) {
+        return false;
+    }
+
+    constexpr std::uint64_t half_second_ticks = 5'000'000ULL;
+    if (display_ticks <= std::numeric_limits<std::uint64_t>::max() - half_second_ticks) {
+        display_ticks += half_second_ticks;
+    }
+    display_ticks -= display_ticks % 10'000'000ULL;
+    return dat_player::dotnet_ticks_to_parts(display_ticks, parts);
+}
+
+std::wstring format_recording_date(const dat_player::RecordingDateTimeParts& parts) {
+    std::wostringstream text;
+    text << parts.month << L"/" << parts.day << L"/" << parts.year;
+    return text.str();
+}
+
+std::wstring format_recording_time(const dat_player::RecordingDateTimeParts& parts) {
+    int hour = parts.hour % 12;
+    if (hour == 0) {
+        hour = 12;
+    }
+    std::wostringstream text;
+    text << hour << L":" << std::setfill(L'0') << std::setw(2) << parts.minute
+         << L":" << std::setw(2) << parts.second << L" "
+         << (parts.hour >= 12 ? L"PM" : L"AM");
+    return text.str();
+}
+
+std::wstring format_recording_timeline_label(std::uint64_t ticks) {
+    dat_player::RecordingDateTimeParts parts;
+    if (!display_parts_for_recording_ticks(ticks, parts)) {
+        return L"";
+    }
+    return format_recording_date(parts) + L"\r\n" + format_recording_time(parts);
+}
+
+std::wstring format_recording_thumb_label(std::uint64_t frame) {
+    std::uint64_t ticks = 0;
+    dat_player::RecordingDateTimeParts parts;
+    if (!recording_ticks_for_frame(frame, ticks) || !display_parts_for_recording_ticks(ticks, parts)) {
+        return L"";
+    }
+    return format_recording_time(parts);
+}
+
+std::wstring format_recording_datetime(std::uint64_t ticks) {
+    dat_player::RecordingDateTimeParts parts;
+    if (!display_parts_for_recording_ticks(ticks, parts)) {
+        return L"";
+    }
+    return format_recording_date(parts) + L" " + format_recording_time(parts);
+}
+
+std::wstring metadata_source_label(const dat_player::RecordingMetadata& metadata) {
+    if (metadata.has_dat_frame_ticks && metadata.sidecar.available) {
+        return L"SEF2 + DAT";
+    }
+    if (metadata.has_dat_frame_ticks) {
+        return L"DAT only";
+    }
+    if (metadata.sidecar.available) {
+        return L"SEF2 only";
+    }
+    if (metadata.confidence == dat_player::RecordingMetadataConfidence::Low) {
+        return L"fallback elapsed only";
+    }
+    return L"none";
+}
+
+std::wstring format_offset_minutes(int minutes) {
+    const int magnitude = std::abs(minutes);
+    std::wostringstream text;
+    text << L"UTC" << (minutes >= 0 ? L"+" : L"-")
+         << std::setfill(L'0') << std::setw(2) << (magnitude / 60)
+         << L":" << std::setw(2) << (magnitude % 60);
+    return text.str();
+}
+
 bool set_window_text_if_changed(HWND window, const std::wstring& text) {
     if (!window) {
         return false;
@@ -620,7 +780,11 @@ void update_thumb_time_label(std::uint64_t display_frame) {
     POINT timeline_origin = {timeline_rect.left, timeline_rect.top};
     MapWindowPoints(nullptr, g_state.hwnd, &timeline_origin, 1);
 
-    constexpr int label_width = 54;
+    constexpr int elapsed_label_width = 54;
+    constexpr int recording_label_width = 86;
+    const auto recording_text = format_recording_thumb_label(display_frame);
+    const bool show_recording_time = !recording_text.empty();
+    const int label_width = show_recording_time ? recording_label_width : elapsed_label_width;
     constexpr int label_height = 18;
     const int timeline_width = std::max<int>(1, timeline_rect.right - timeline_rect.left);
     const int timeline_height = std::max<int>(1, timeline_rect.bottom - timeline_rect.top);
@@ -636,7 +800,7 @@ void update_thumb_time_label(std::uint64_t display_frame) {
     const int x = std::clamp(thumb_center - label_width / 2, min_x, max_x);
     const int y = timeline_origin.y + timeline_height - 2;
     const RECT new_rect = {x, y, x + label_width, y + label_height};
-    const auto new_text = format_clock_time(seconds_for_frame(display_frame));
+    const auto new_text = show_recording_time ? recording_text : format_clock_time(seconds_for_frame(display_frame));
 
     const bool moved =
         !g_state.has_thumb_time_label_rect ||
@@ -680,10 +844,17 @@ void update_timeline() {
         EnableWindow(g_state.timeline, frame_count() > 0);
     }
     if (g_state.current_time_label) {
-        set_window_text_if_changed(g_state.current_time_label, L"00:00");
+        std::uint64_t start_ticks = 0;
+        const auto text = recording_start_ticks(start_ticks)
+            ? format_recording_timeline_label(start_ticks)
+            : std::wstring(L"00:00");
+        set_window_text_if_changed(g_state.current_time_label, text);
     }
     if (g_state.total_time_label) {
-        const auto text = format_clock_time(total_duration_seconds());
+        std::uint64_t end_ticks = 0;
+        const auto text = recording_end_ticks(end_ticks)
+            ? format_recording_timeline_label(end_ticks)
+            : format_clock_time(total_duration_seconds());
         set_window_text_if_changed(g_state.total_time_label, text);
     }
     update_thumb_time_label(display_frame);
@@ -696,16 +867,6 @@ void update_file_path_text() {
     std::wstring text = g_state.loaded_path.empty()
         ? L"No DAT file loaded"
         : g_state.loaded_path.filename().wstring();
-    const auto& metadata = g_state.index.summary.recording_metadata;
-    const auto start_ticks = metadata.has_dat_frame_ticks
-        ? metadata.first_frame_ticks
-        : (metadata.sidecar.has_start_ticks ? metadata.sidecar.start_ticks : 0);
-    if (!g_state.loaded_path.empty() && start_ticks != 0) {
-        const auto formatted = dat_player::format_dotnet_ticks(start_ticks);
-        if (!formatted.empty()) {
-            text += L"  -  " + widen(formatted);
-        }
-    }
     set_window_text_if_changed(g_state.file_path_edit, text);
 }
 
@@ -1010,7 +1171,8 @@ std::wstring build_info_text() {
          << L"Interframes: " << interframes << L"\r\n"
          << L"Timeline frame: " << (g_state.current_frame + 1) << L" / " << total;
     const auto& metadata = g_state.index.summary.recording_metadata;
-    if (metadata.has_dat_frame_ticks || metadata.sidecar.available) {
+    if (metadata.has_dat_frame_ticks || metadata.sidecar.available ||
+        metadata.confidence == dat_player::RecordingMetadataConfidence::Low) {
         text << L"\r\n\r\nRecording metadata:\r\n";
         const auto start_ticks = metadata.has_dat_frame_ticks
             ? metadata.first_frame_ticks
@@ -1019,10 +1181,36 @@ std::wstring build_info_text() {
             ? metadata.last_frame_ticks
             : (metadata.sidecar.has_end_ticks ? metadata.sidecar.end_ticks : 0);
         if (start_ticks != 0) {
-            text << L"Recording start: " << widen(dat_player::format_dotnet_ticks(start_ticks)) << L" raw\r\n";
+            const auto display = format_recording_datetime(start_ticks);
+            if (!display.empty()) {
+                text << L"Recording start: " << display << L"\r\n";
+            }
         }
         if (end_ticks != 0) {
-            text << L"Recording end: " << widen(dat_player::format_dotnet_ticks(end_ticks)) << L" raw\r\n";
+            const auto display = format_recording_datetime(end_ticks);
+            if (!display.empty()) {
+                text << L"Recording end: " << display << L"\r\n";
+            }
+        }
+        std::uint64_t current_ticks = 0;
+        if (recording_ticks_for_frame(g_state.current_frame, current_ticks)) {
+            const auto display = format_recording_datetime(current_ticks);
+            if (!display.empty()) {
+                text << L"Current frame recording time: " << display << L"\r\n";
+            }
+        }
+        if (start_ticks != 0) {
+            text << L"Raw metadata start: " << widen(dat_player::format_dotnet_ticks(start_ticks)) << L"\r\n";
+        }
+        if (end_ticks != 0) {
+            text << L"Raw metadata end: " << widen(dat_player::format_dotnet_ticks(end_ticks)) << L"\r\n";
+        }
+        if (metadata.has_dat_frame_ticks) {
+            text << L"DAT first-frame ticks: " << metadata.first_frame_ticks << L"\r\n";
+            if (current_ticks != 0) {
+                text << L"DAT current-frame ticks: " << current_ticks << L"\r\n";
+            }
+            text << L"DAT last-frame ticks: " << metadata.last_frame_ticks << L"\r\n";
         }
         text << L"Recording duration: " << format_double(total_duration_seconds(), 3) << L" sec\r\n";
         if (!metadata.sidecar.camera_name.empty()) {
@@ -1035,23 +1223,22 @@ std::wstring build_info_text() {
             }
             text << widen(metadata.sidecar.model) << L"\r\n";
         }
-        text << L"Metadata source: " << widen(metadata.source.empty() ? std::string("none") : metadata.source) << L"\r\n"
+        text << L"Metadata source: " << metadata_source_label(metadata) << L"\r\n"
              << L"Confidence: " << widen(dat_player::to_string(metadata.confidence)) << L"\r\n";
+        if (metadata.sidecar.has_display_offset_minutes) {
+            text << L"Display offset: " << format_offset_minutes(metadata.sidecar.display_offset_minutes) << L"\r\n";
+        }
         if (!metadata.sidecar.timezone_offset_minutes_candidates.empty()) {
             text << L"Timezone candidates: ";
             for (std::size_t i = 0; i < metadata.sidecar.timezone_offset_minutes_candidates.size(); ++i) {
                 if (i > 0) {
                     text << L", ";
                 }
-                const int minutes = metadata.sidecar.timezone_offset_minutes_candidates[i];
-                text << (minutes >= 0 ? L"+" : L"-")
-                     << std::setw(2) << std::setfill(L'0') << (std::abs(minutes) / 60)
-                     << L":" << std::setw(2) << (std::abs(minutes) % 60)
-                     << std::setfill(L' ');
+                text << format_offset_minutes(metadata.sidecar.timezone_offset_minutes_candidates[i]);
             }
-            text << L"\r\n";
+        } else {
+            text << L"Timezone/offset info: not available";
         }
-        text << L"Timezone display: raw recording ticks; archive timezone conversion not applied";
     }
     if (!g_state.decode_smoke_text.empty()) {
         text << L"\r\n\r\nDiagnostics:\r\n" << g_state.decode_smoke_text;
@@ -1430,7 +1617,7 @@ std::wstring format_playback_diagnostics(const std::wstring& state) {
         text << L"Current timestamp: " << timestamp << L"\r\n"
              << L"Approx time: " << format_double(seconds, 2) << L" sec\r\n";
         if (frame.has_recording_ticks) {
-            text << L"Current recording time: " << widen(dat_player::format_dotnet_ticks(frame.recording_ticks)) << L" raw\r\n";
+            text << L"Current recording time: " << widen(dat_player::format_dotnet_ticks(frame.recording_ticks)) << L"\r\n";
         }
     }
     text << L"Timing: stable cadence from estimated FPS; DAT timestamps used for time display";
@@ -1966,7 +2153,7 @@ void resize_to_actual_size() {
     const int header_height = 0;
     const int file_row_height = 22;
     const int button_height = 32;
-    const int timeline_height = 44;
+    const int timeline_height = 58;
     const int status_height = 24;
     const int file_top = header_height + 12;
     const int content_top = file_top + file_row_height + 8;
@@ -2044,10 +2231,10 @@ void layout_controls(HWND hwnd) {
     const int smoke_button_width = button_width;
     const int render_button_width = button_width;
     const int button_height = 32;
-    const int timeline_height = 44;
+    const int timeline_height = 58;
     const int trackbar_height = 28;
     const int status_height = 24;
-    const int time_label_width = 54;
+    const int time_label_width = 92;
     const int file_top = header_height + 12;
     const int content_top = file_top + file_row_height + 8;
     const int status_top = rect.bottom - status_height - 6;
@@ -2073,9 +2260,9 @@ void layout_controls(HWND hwnd) {
     ShowWindow(g_state.file_label, SW_HIDE);
     MoveWindow(g_state.file_path_edit, padding, file_top, video_width, file_row_height, TRUE);
     MoveWindow(g_state.video_panel, padding, content_top, video_width, video_height, TRUE);
-    MoveWindow(g_state.current_time_label, padding, timeline_top + 4, time_label_width, 20, TRUE);
+    MoveWindow(g_state.current_time_label, padding, timeline_top + 2, time_label_width, 38, TRUE);
     MoveWindow(g_state.timeline, padding + time_label_width + 6, timeline_top, video_width - time_label_width * 2 - 12, trackbar_height, TRUE);
-    MoveWindow(g_state.total_time_label, padding + video_width - time_label_width, timeline_top + 4, time_label_width, 20, TRUE);
+    MoveWindow(g_state.total_time_label, padding + video_width - time_label_width, timeline_top + 2, time_label_width, 38, TRUE);
     const int button_group_width =
         open_button_width + actual_size_button_width + play_button_width + speed_button_width + details_toggle_button_width +
         button_gap * 4;
@@ -2271,9 +2458,6 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 const auto target = frame_from_timeline_position(position);
                 g_state.timeline_preview_frame = target;
                 g_state.has_timeline_preview = true;
-                if (g_state.current_time_label) {
-                    set_window_text_if_changed(g_state.current_time_label, L"00:00");
-                }
                 update_thumb_time_label(target);
                 g_state.decode_smoke_text = format_seek_diagnostics(
                     g_state.resume_after_timeline_drag ? L"dragging, will resume" : L"dragging",

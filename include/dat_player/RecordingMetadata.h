@@ -36,6 +36,8 @@ struct RecordingSidecarMetadata {
     std::string manufacturer;
     std::string model;
     std::vector<int> timezone_offset_minutes_candidates;
+    bool has_display_offset_minutes = false;
+    int display_offset_minutes = 0;
 };
 
 struct RecordingMetadata {
@@ -51,6 +53,7 @@ struct RecordingMetadata {
 bool is_plausible_dotnet_ticks(std::uint64_t ticks);
 bool parse_dotnet_iso_ticks(const std::string& value, std::uint64_t& ticks);
 bool dotnet_ticks_to_parts(std::uint64_t ticks, RecordingDateTimeParts& parts);
+bool offset_dotnet_ticks(std::uint64_t ticks, int offset_minutes, std::uint64_t& adjusted_ticks);
 std::string format_dotnet_ticks(std::uint64_t ticks);
 std::string to_string(RecordingMetadataConfidence confidence);
 

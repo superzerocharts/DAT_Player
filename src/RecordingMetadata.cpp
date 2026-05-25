@@ -210,6 +210,38 @@ std::vector<int> timezone_offsets_from_blob(const std::string& base64_blob) {
     return offsets;
 }
 
+bool derive_display_offset_minutes(const std::vector<int>& offsets, int& display_offset_minutes) {
+    if (offsets.empty()) {
+        return false;
+    }
+
+    bool has_standard_offset = false;
+    int standard_offset = 0;
+    bool has_daylight_delta = false;
+    int daylight_delta = 0;
+    for (const int offset : offsets) {
+        if (offset < 0 && (!has_standard_offset || offset < standard_offset)) {
+            standard_offset = offset;
+            has_standard_offset = true;
+        } else if (offset > 0 && offset <= 120 && offset > daylight_delta) {
+            daylight_delta = offset;
+            has_daylight_delta = true;
+        }
+    }
+
+    if (has_standard_offset) {
+        display_offset_minutes = standard_offset + (has_daylight_delta ? daylight_delta : 0);
+        return true;
+    }
+
+    if (offsets.size() == 1 && offsets.front() != 0) {
+        display_offset_minutes = offsets.front();
+        return true;
+    }
+
+    return false;
+}
+
 std::string read_text_file(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
@@ -316,6 +348,25 @@ bool dotnet_ticks_to_parts(std::uint64_t ticks, RecordingDateTimeParts& parts) {
     return true;
 }
 
+bool offset_dotnet_ticks(std::uint64_t ticks, int offset_minutes, std::uint64_t& adjusted_ticks) {
+    const auto offset_ticks = static_cast<std::int64_t>(offset_minutes) * 60LL * static_cast<std::int64_t>(kTicksPerSecond);
+    if (offset_ticks < 0) {
+        const auto magnitude = static_cast<std::uint64_t>(-offset_ticks);
+        if (ticks < magnitude) {
+            return false;
+        }
+        adjusted_ticks = ticks - magnitude;
+        return true;
+    }
+
+    const auto magnitude = static_cast<std::uint64_t>(offset_ticks);
+    if (ticks > std::numeric_limits<std::uint64_t>::max() - magnitude) {
+        return false;
+    }
+    adjusted_ticks = ticks + magnitude;
+    return true;
+}
+
 std::string format_dotnet_ticks(std::uint64_t ticks) {
     RecordingDateTimeParts parts;
     if (!dotnet_ticks_to_parts(ticks, parts)) {
@@ -380,6 +431,8 @@ RecordingSidecarMetadata parse_sef2_metadata_xml(const std::string& xml) {
         const auto timezone = find_attribute(channel, "timezone");
         if (!timezone.empty()) {
             metadata.timezone_offset_minutes_candidates = timezone_offsets_from_blob(timezone);
+            metadata.has_display_offset_minutes =
+                derive_display_offset_minutes(metadata.timezone_offset_minutes_candidates, metadata.display_offset_minutes);
         }
         if (!metadata.manufacturer.empty() || !metadata.model.empty() || !metadata.timezone_offset_minutes_candidates.empty()) {
             metadata.available = true;
