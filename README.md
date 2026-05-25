@@ -22,7 +22,7 @@ and Media Foundation.
 - Autoplay when a valid `.dat` file is opened or dropped
 - Strict single-file `.dat` drag-and-drop loading
 - `Actual Size` window sizing based on the indexed/source resolution
-- Portable Release package folder containing only `DatPlayer.exe` and `README.md`
+- Portable Release package folder containing only `DatPlayer.exe` and the end-user `README.txt`
 
 DAT Player still plays only compatible `.dat` files in this phase. It does not
 play `.mp4`, `.mkv`, `.avi`, `.sef`, `.sef2`, arbitrary video files, audio, or
@@ -93,14 +93,15 @@ Package output:
 
 ```text
 dist\DatPlayer\DatPlayer.exe
-dist\DatPlayer\README.md
+dist\DatPlayer\README.txt
 dist\DatPlayer-portable.zip
 ```
 
-The package helper does not include sample DAT files, DAT Converter files,
-developer test executables, FFmpeg, mpv, VLC, or other tools. If `dumpbin.exe`
-is available on PATH, the script prints the executable dependency list and flags
-unexpected local DLLs.
+The package helper does not include the technical root `README.md`, developer
+docs, research files, sample DAT files, DAT Converter files, developer test
+executables, FFmpeg, mpv, VLC, or other tools. If `dumpbin.exe` is available on
+PATH, the script prints the executable dependency list and flags unexpected
+local DLLs.
 
 ## Optional Local Sample Smoke Tests
 

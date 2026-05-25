@@ -10,11 +10,16 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $buildRoot = Join-Path $repoRoot $BuildDir
 $exePath = Join-Path $buildRoot (Join-Path $Configuration "DatPlayer.exe")
+$readmePath = Join-Path $repoRoot "packaging\README.txt"
 $distPath = Join-Path $repoRoot $DistDir
 $distParent = Split-Path -Parent $distPath
 
 if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
     throw "DatPlayer.exe was not found at '$exePath'. Build Release first."
+}
+
+if (-not (Test-Path -LiteralPath $readmePath -PathType Leaf)) {
+    throw "End-user README was not found at '$readmePath'."
 }
 
 if (-not (Test-Path -LiteralPath $distParent -PathType Container)) {
@@ -33,7 +38,7 @@ if (Test-Path -LiteralPath $fullDistPath) {
 New-Item -ItemType Directory -Path $fullDistPath | Out-Null
 
 Copy-Item -LiteralPath $exePath -Destination (Join-Path $fullDistPath "DatPlayer.exe")
-Copy-Item -LiteralPath (Join-Path $repoRoot "README.md") -Destination (Join-Path $fullDistPath "README.md")
+Copy-Item -LiteralPath $readmePath -Destination (Join-Path $fullDistPath "README.txt")
 
 $unexpectedLocalDlls = Get-ChildItem -LiteralPath $fullDistPath -Filter *.dll -File -ErrorAction SilentlyContinue
 if ($unexpectedLocalDlls) {
@@ -60,8 +65,15 @@ if ($packagedFiles -contains "dat_decode_smoke_test.exe" -or $packagedFiles -con
     throw "Developer test executables should not be in the end-user release folder."
 }
 
-if (Get-ChildItem -LiteralPath $fullDistPath -Filter *.dat -File -ErrorAction SilentlyContinue) {
-    throw "Sample DAT files should not be included in the release folder."
+if ($packagedFiles -contains "README.md") {
+    throw "Technical README.md should not be in the end-user release folder."
+}
+
+$blockedPackageExtensions = @("*.dat", "*.sef", "*.sef2", "*.mp4", "*.mkv", "*.avi", "*.png", "*.jpg", "*.jpeg", "*.bmp")
+foreach ($pattern in $blockedPackageExtensions) {
+    if (Get-ChildItem -LiteralPath $fullDistPath -Filter $pattern -File -ErrorAction SilentlyContinue) {
+        throw "Sample media, screenshots, and research files should not be included in the release folder."
+    }
 }
 
 if ($Zip) {

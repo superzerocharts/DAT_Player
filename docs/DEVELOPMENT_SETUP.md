@@ -103,7 +103,7 @@ Expected output:
 
 ```text
 dist\DatPlayer\DatPlayer.exe
-dist\DatPlayer\README.md
+dist\DatPlayer\README.txt
 dist\DatPlayer-portable.zip
 ```
 
