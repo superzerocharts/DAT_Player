@@ -45,6 +45,7 @@ constexpr int kCurrentTimeLabelId = 1013;
 constexpr int kTotalTimeLabelId = 1014;
 constexpr int kDetailsToggleButtonId = 1015;
 constexpr int kSpeedButtonId = 1016;
+constexpr int kThumbTimeLabelId = 1017;
 constexpr UINT kPlaybackFrameMessage = WM_APP + 1;
 constexpr UINT kPlaybackFinishedMessage = WM_APP + 2;
 constexpr UINT kSeekFinishedMessage = WM_APP + 3;
@@ -114,6 +115,7 @@ struct PlayerState {
     HWND details_group = nullptr;
     HWND current_time_label = nullptr;
     HWND total_time_label = nullptr;
+    HWND thumb_time_label = nullptr;
     HWND video_panel = nullptr;
     HWND info_label = nullptr;
     HWND status_label = nullptr;
@@ -346,7 +348,7 @@ int details_panel_width_for_client_width(int client_width) {
 
 int minimum_video_width_for_controls() {
     constexpr int button_width = 104;
-    return button_width + 8 + button_width + 16 + button_width + 8 + button_width;
+    return button_width + 8 + button_width + 8 + button_width + 16 + button_width + 8 + button_width;
 }
 
 int client_width_for_video_width(int video_width, bool details_visible) {
@@ -506,6 +508,24 @@ void set_status(const std::wstring& text) {
     }
 }
 
+void move_window_if_changed(HWND window, int x, int y, int width, int height, BOOL repaint) {
+    if (!window) {
+        return;
+    }
+
+    RECT current = {};
+    GetWindowRect(window, &current);
+    POINT top_left = {current.left, current.top};
+    MapWindowPoints(nullptr, GetParent(window), &top_left, 1);
+    const int current_width = current.right - current.left;
+    const int current_height = current.bottom - current.top;
+    if (top_left.x == x && top_left.y == y && current_width == width && current_height == height) {
+        return;
+    }
+
+    MoveWindow(window, x, y, width, height, repaint);
+}
+
 void update_play_button() {
     if (g_state.play_button) {
         const bool pause_would_cancel_scrub_resume =
@@ -562,6 +582,36 @@ void stop_preview(bool join_worker = true) {
     g_state.preview_in_flight = false;
 }
 
+void update_thumb_time_label(std::uint64_t display_frame) {
+    if (!g_state.hwnd || !g_state.thumb_time_label || !g_state.timeline) {
+        return;
+    }
+
+    set_window_text_if_changed(g_state.thumb_time_label, format_clock_time(seconds_for_frame(display_frame)));
+
+    RECT timeline_rect = {};
+    GetWindowRect(g_state.timeline, &timeline_rect);
+    POINT timeline_origin = {timeline_rect.left, timeline_rect.top};
+    MapWindowPoints(nullptr, g_state.hwnd, &timeline_origin, 1);
+
+    constexpr int label_width = 54;
+    constexpr int label_height = 18;
+    const int timeline_width = std::max<int>(1, timeline_rect.right - timeline_rect.left);
+    const int timeline_height = std::max<int>(1, timeline_rect.bottom - timeline_rect.top);
+    const int timeline_position = timeline_position_from_frame(display_frame);
+    const int thumb_center = timeline_origin.x + static_cast<int>(
+        (static_cast<double>(timeline_position) / static_cast<double>(kTrackbarMax)) * timeline_width + 0.5);
+
+    RECT client = {};
+    GetClientRect(g_state.hwnd, &client);
+    constexpr int padding = 14;
+    const int min_x = padding;
+    const int max_x = std::max<int>(min_x, client.right - padding - label_width);
+    const int x = std::clamp(thumb_center - label_width / 2, min_x, max_x);
+    const int y = timeline_origin.y + timeline_height - 2;
+    move_window_if_changed(g_state.thumb_time_label, x, y, label_width, label_height, FALSE);
+}
+
 void update_timeline() {
     const auto display_frame = g_state.has_timeline_preview
         ? g_state.timeline_preview_frame
@@ -572,13 +622,13 @@ void update_timeline() {
         EnableWindow(g_state.timeline, frame_count() > 0);
     }
     if (g_state.current_time_label) {
-        const auto text = format_clock_time(seconds_for_frame(display_frame));
-        set_window_text_if_changed(g_state.current_time_label, text);
+        set_window_text_if_changed(g_state.current_time_label, L"00:00");
     }
     if (g_state.total_time_label) {
         const auto text = format_clock_time(total_duration_seconds());
         set_window_text_if_changed(g_state.total_time_label, text);
     }
+    update_thumb_time_label(display_frame);
 }
 
 void update_file_path_text() {
@@ -586,8 +636,8 @@ void update_file_path_text() {
         return;
     }
     const std::wstring text = g_state.loaded_path.empty()
-        ? L"No .dat file selected"
-        : g_state.loaded_path.wstring();
+        ? L"No DAT file loaded"
+        : g_state.loaded_path.filename().wstring();
     set_window_text_if_changed(g_state.file_path_edit, text);
 }
 
@@ -931,6 +981,7 @@ void set_enabled_after_load(bool enabled) {
     EnableWindow(g_state.timeline, enabled);
     EnableWindow(g_state.current_time_label, enabled);
     EnableWindow(g_state.total_time_label, enabled);
+    EnableWindow(g_state.thumb_time_label, enabled);
 }
 
 void reset_loaded_state() {
@@ -1794,12 +1845,12 @@ void resize_to_actual_size() {
 
     const int padding = 14;
     const int header_height = 0;
-    const int file_row_height = 30;
+    const int file_row_height = 22;
     const int button_height = 32;
-    const int timeline_height = 28;
+    const int timeline_height = 44;
     const int status_height = 24;
     const int file_top = header_height + 12;
-    const int content_top = file_top + file_row_height + 14;
+    const int content_top = file_top + file_row_height + 8;
     const int content_bottom_margin = status_height + 16;
     const int controls_height = button_height + 8;
 
@@ -1863,8 +1914,7 @@ void layout_controls(HWND hwnd) {
     const int width = rect.right - rect.left;
     const int padding = 14;
     const int header_height = 0;
-    const int file_row_height = 30;
-    const int file_label_width = 64;
+    const int file_row_height = 22;
     const int button_width = 104;
     const int open_button_width = button_width;
     const int play_button_width = button_width;
@@ -1874,11 +1924,12 @@ void layout_controls(HWND hwnd) {
     const int smoke_button_width = button_width;
     const int render_button_width = button_width;
     const int button_height = 32;
-    const int timeline_height = 28;
+    const int timeline_height = 44;
+    const int trackbar_height = 28;
     const int status_height = 24;
     const int time_label_width = 54;
     const int file_top = header_height + 12;
-    const int content_top = file_top + file_row_height + 14;
+    const int content_top = file_top + file_row_height + 8;
     const int status_top = rect.bottom - status_height - 6;
     const int content_bottom = status_top - 10;
     const int details_width = g_state.details_visible ? details_panel_width_for_client_width(width) : 0;
@@ -1898,15 +1949,16 @@ void layout_controls(HWND hwnd) {
 
     MoveWindow(g_state.brand_header, 0, 0, width, 0, TRUE);
     ShowWindow(g_state.brand_header, SW_HIDE);
-    MoveWindow(g_state.file_label, padding, file_top + 5, file_label_width, 22, TRUE);
-    MoveWindow(g_state.file_path_edit, padding + file_label_width, file_top, std::max(80, width - padding * 3 - file_label_width - open_button_width), file_row_height, TRUE);
-    MoveWindow(g_state.open_button, width - padding - open_button_width, file_top - 1, open_button_width, button_height, TRUE);
+    MoveWindow(g_state.file_label, 0, 0, 0, 0, TRUE);
+    ShowWindow(g_state.file_label, SW_HIDE);
+    MoveWindow(g_state.file_path_edit, padding, file_top, video_width, file_row_height, TRUE);
     MoveWindow(g_state.video_panel, padding, content_top, video_width, video_height, TRUE);
     MoveWindow(g_state.current_time_label, padding, timeline_top + 4, time_label_width, 20, TRUE);
-    MoveWindow(g_state.timeline, padding + time_label_width + 6, timeline_top, video_width - time_label_width * 2 - 12, timeline_height, TRUE);
+    MoveWindow(g_state.timeline, padding + time_label_width + 6, timeline_top, video_width - time_label_width * 2 - 12, trackbar_height, TRUE);
     MoveWindow(g_state.total_time_label, padding + video_width - time_label_width, timeline_top + 4, time_label_width, 20, TRUE);
-    MoveWindow(g_state.play_button, padding, controls_top, play_button_width, button_height, TRUE);
-    MoveWindow(g_state.speed_button, padding + play_button_width + 8, controls_top, speed_button_width, button_height, TRUE);
+    MoveWindow(g_state.open_button, padding, controls_top, open_button_width, button_height, TRUE);
+    MoveWindow(g_state.play_button, padding + open_button_width + 8, controls_top, play_button_width, button_height, TRUE);
+    MoveWindow(g_state.speed_button, padding + open_button_width + 8 + play_button_width + 8, controls_top, speed_button_width, button_height, TRUE);
     MoveWindow(g_state.actual_size_button, padding + video_width - actual_size_button_width, controls_top, actual_size_button_width, button_height, TRUE);
     MoveWindow(g_state.details_toggle_button, padding + video_width - actual_size_button_width - details_toggle_button_width - 8, controls_top, details_toggle_button_width, button_height, TRUE);
     if (g_state.details_visible) {
@@ -1922,6 +1974,9 @@ void layout_controls(HWND hwnd) {
     update_details_toggle_button();
     update_speed_button();
     MoveWindow(g_state.status_label, padding, status_top, width - padding * 2, status_height, TRUE);
+    update_thumb_time_label(g_state.has_timeline_preview
+        ? g_state.timeline_preview_frame
+        : (g_state.has_pending_seek ? g_state.pending_seek_frame : g_state.current_frame));
 }
 
 LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -1946,10 +2001,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
 
         g_state.brand_header = CreateWindowW(L"DATBrandHeader", L"", WS_CHILD,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBrandHeaderId)), nullptr, nullptr);
-        g_state.file_label = CreateWindowW(L"STATIC", L"DAT file:", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        g_state.file_label = CreateWindowW(L"STATIC", L"", WS_CHILD,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFileLabelId)), nullptr, nullptr);
-        g_state.file_path_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"No .dat file selected",
-            WS_CHILD | WS_VISIBLE | ES_LEFT | ES_AUTOHSCROLL | ES_READONLY,
+        g_state.file_path_edit = CreateWindowW(L"STATIC", L"No DAT file loaded",
+            WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFilePathId)), nullptr, nullptr);
         g_state.open_button = CreateWindowW(L"BUTTON", L"Open .dat", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpenButtonId)), nullptr, nullptr);
@@ -1973,6 +2028,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCurrentTimeLabelId)), nullptr, nullptr);
         g_state.total_time_label = CreateWindowW(L"STATIC", L"00:00", WS_CHILD | WS_VISIBLE | SS_RIGHT,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTotalTimeLabelId)), nullptr, nullptr);
+        g_state.thumb_time_label = CreateWindowW(L"STATIC", L"00:00", WS_CHILD | WS_VISIBLE | SS_CENTER,
+            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kThumbTimeLabelId)), nullptr, nullptr);
         g_state.video_panel = CreateWindowW(L"DATVideoPanel", L"", WS_CHILD | WS_VISIBLE | WS_BORDER,
             0, 0, 0, 0, hwnd, nullptr, nullptr, nullptr);
         DragAcceptFiles(hwnd, TRUE);
@@ -1995,6 +2052,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         apply_default_font(g_state.render_first_frame_button);
         apply_default_font(g_state.current_time_label);
         apply_default_font(g_state.total_time_label);
+        apply_default_font(g_state.thumb_time_label);
         apply_default_font(g_state.info_label);
         apply_default_font(g_state.status_label);
 
@@ -2080,9 +2138,9 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 g_state.timeline_preview_frame = target;
                 g_state.has_timeline_preview = true;
                 if (g_state.current_time_label) {
-                    const auto text = format_clock_time(seconds_for_frame(target));
-                    set_window_text_if_changed(g_state.current_time_label, text);
+                    set_window_text_if_changed(g_state.current_time_label, L"00:00");
                 }
+                update_thumb_time_label(target);
                 g_state.decode_smoke_text = format_seek_diagnostics(
                     g_state.resume_after_timeline_drag ? L"dragging, will resume" : L"dragging",
                     target,
@@ -2415,7 +2473,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        693,
+        689,
         584,
         nullptr,
         nullptr,
