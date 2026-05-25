@@ -1,4 +1,3 @@
 #include "resource.h"
 
 IDI_DATPLAYER_ICON ICON "assets/DatPlayer.ico"
-IDR_DATPLAYER_LOGO RCDATA "assets/DatPlayer_logo.png"

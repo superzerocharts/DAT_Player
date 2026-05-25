@@ -5,9 +5,6 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <commdlg.h>
-#include <objidl.h>
-#include <propidl.h>
-#include <gdiplus.h>
 #include <shellapi.h>
 
 #include <algorithm>
@@ -16,7 +13,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cwctype>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -39,7 +35,6 @@ constexpr int kActualSizeButtonId = 1005;
 constexpr int kTimelineId = 1006;
 constexpr int kInfoLabelId = 1007;
 constexpr int kStatusLabelId = 1008;
-constexpr int kBrandHeaderId = 1009;
 constexpr int kFilePathId = 1010;
 constexpr int kFileLabelId = 1011;
 constexpr int kDetailsGroupId = 1012;
@@ -123,7 +118,6 @@ struct PlayerState {
     HWND decode_test_button = nullptr;
     HWND render_first_frame_button = nullptr;
     HWND timeline = nullptr;
-    HWND brand_header = nullptr;
     HWND file_label = nullptr;
     HWND file_path_edit = nullptr;
     HWND integrity_dot = nullptr;
@@ -136,8 +130,6 @@ struct PlayerState {
     HWND status_label = nullptr;
     HFONT ui_font = nullptr;
     HBRUSH window_background_brush = nullptr;
-    ULONG_PTR gdiplus_token = 0;
-    std::unique_ptr<Gdiplus::Bitmap> brand_logo;
     dat_player::DatFrameIndex index;
     std::filesystem::path loaded_path;
     std::wstring decode_test_text;
@@ -1094,51 +1086,6 @@ void arm_preview_timer(HWND hwnd, std::chrono::milliseconds delay) {
     g_state.preview_timer_armed = true;
 }
 
-std::unique_ptr<Gdiplus::Bitmap> load_png_resource(HINSTANCE instance, int resource_id) {
-    HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(resource_id), RT_RCDATA);
-    if (!resource) {
-        return nullptr;
-    }
-
-    HGLOBAL resource_handle = LoadResource(instance, resource);
-    if (!resource_handle) {
-        return nullptr;
-    }
-
-    const DWORD resource_size = SizeofResource(instance, resource);
-    const void* resource_data = LockResource(resource_handle);
-    if (!resource_data || resource_size == 0) {
-        return nullptr;
-    }
-
-    HGLOBAL copy_handle = GlobalAlloc(GMEM_MOVEABLE, resource_size);
-    if (!copy_handle) {
-        return nullptr;
-    }
-
-    void* copy_data = GlobalLock(copy_handle);
-    if (!copy_data) {
-        GlobalFree(copy_handle);
-        return nullptr;
-    }
-
-    std::memcpy(copy_data, resource_data, resource_size);
-    GlobalUnlock(copy_handle);
-
-    IStream* stream = nullptr;
-    if (CreateStreamOnHGlobal(copy_handle, TRUE, &stream) != S_OK || !stream) {
-        GlobalFree(copy_handle);
-        return nullptr;
-    }
-
-    std::unique_ptr<Gdiplus::Bitmap> bitmap(Gdiplus::Bitmap::FromStream(stream));
-    stream->Release();
-    if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok) {
-        return nullptr;
-    }
-    return bitmap;
-}
-
 RECT fitted_rect(const RECT& bounds, std::uint32_t source_width, std::uint32_t source_height) {
     RECT result = bounds;
     const int bounds_width = std::max<int>(1, static_cast<int>(bounds.right - bounds.left));
@@ -1162,131 +1109,6 @@ RECT fitted_rect(const RECT& bounds, std::uint32_t source_width, std::uint32_t s
     return result;
 }
 
-Gdiplus::PointF point_toward(const Gdiplus::PointF& from, const Gdiplus::PointF& to, float distance) {
-    const float dx = to.X - from.X;
-    const float dy = to.Y - from.Y;
-    const float length = std::sqrt(dx * dx + dy * dy);
-    if (length <= 0.001f) {
-        return from;
-    }
-    const float clamped = std::min(distance, length * 0.45f);
-    return Gdiplus::PointF(from.X + dx * clamped / length, from.Y + dy * clamped / length);
-}
-
-void add_rounded_triangle(
-    Gdiplus::GraphicsPath& path,
-    const Gdiplus::PointF& a,
-    const Gdiplus::PointF& b,
-    const Gdiplus::PointF& c,
-    float radius) {
-    const Gdiplus::PointF points[3] = { a, b, c };
-    Gdiplus::PointF current = point_toward(points[0], points[1], radius);
-    path.StartFigure();
-    for (int i = 0; i < 3; ++i) {
-        const auto& vertex = points[(i + 1) % 3];
-        const auto& previous = points[i];
-        const auto& next = points[(i + 2) % 3];
-        const auto before = point_toward(vertex, previous, radius);
-        const auto after = point_toward(vertex, next, radius);
-        path.AddLine(current, before);
-        path.AddBezier(before, vertex, vertex, after);
-        current = after;
-    }
-    path.CloseFigure();
-}
-
-void fill_rounded_play_shape(
-    Gdiplus::Graphics& graphics,
-    const Gdiplus::RectF& rect,
-    const Gdiplus::Color& color,
-    float radius) {
-    Gdiplus::GraphicsPath path;
-    add_rounded_triangle(
-        path,
-        Gdiplus::PointF(rect.X, rect.Y),
-        Gdiplus::PointF(rect.X + rect.Width, rect.Y + rect.Height * 0.5f),
-        Gdiplus::PointF(rect.X, rect.Y + rect.Height),
-        radius);
-    Gdiplus::SolidBrush brush(color);
-    graphics.FillPath(&brush, &path);
-}
-
-void draw_fallback_player_logo(Gdiplus::Graphics& graphics, const Gdiplus::RectF& bounds) {
-    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-    graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
-
-    const float scale = std::min(bounds.Width / 190.0f, bounds.Height / 142.0f);
-    const float origin_x = bounds.X + (bounds.Width - 190.0f * scale) * 0.5f;
-    const float origin_y = bounds.Y + (bounds.Height - 142.0f * scale) * 0.5f;
-    const auto map_rect = [&](float x, float y, float w, float h) {
-        return Gdiplus::RectF(origin_x + x * scale, origin_y + y * scale, w * scale, h * scale);
-    };
-
-    const Gdiplus::Color charcoal(255, 32, 40, 48);
-    const Gdiplus::Color slate(255, 48, 58, 68);
-    const Gdiplus::Color green(255, 111, 198, 75);
-    const Gdiplus::Color teal(255, 24, 158, 156);
-
-    fill_rounded_play_shape(graphics, map_rect(18, 18, 44, 36), charcoal, 7.0f * scale);
-    fill_rounded_play_shape(graphics, map_rect(46, 8, 118, 60), green, 10.0f * scale);
-    fill_rounded_play_shape(graphics, map_rect(158, 30, 32, 32), charcoal, 6.0f * scale);
-    fill_rounded_play_shape(graphics, map_rect(10, 58, 92, 64), teal, 10.0f * scale);
-    fill_rounded_play_shape(graphics, map_rect(82, 74, 98, 66), slate, 11.0f * scale);
-
-    Gdiplus::Pen white_pen(Gdiplus::Color(255, 245, 248, 248), 4.0f * scale);
-    graphics.DrawLine(&white_pen, origin_x + 62.0f * scale, origin_y + 28.0f * scale, origin_x + 150.0f * scale, origin_y + 28.0f * scale);
-    graphics.DrawLine(&white_pen, origin_x + 28.0f * scale, origin_y + 72.0f * scale, origin_x + 84.0f * scale, origin_y + 72.0f * scale);
-
-    Gdiplus::FontFamily font_family(L"Segoe UI");
-    Gdiplus::Font logo_font(&font_family, 40.0f * scale, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-    Gdiplus::SolidBrush text_brush(Gdiplus::Color(255, 255, 255, 255));
-    Gdiplus::StringFormat text_format;
-    text_format.SetAlignment(Gdiplus::StringAlignmentCenter);
-    text_format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-    graphics.DrawString(L"DAT", -1, &logo_font, map_rect(50, 72, 116, 58), &text_format, &text_brush);
-}
-
-void draw_player_logo(Gdiplus::Graphics& graphics, const Gdiplus::RectF& bounds) {
-    if (g_state.brand_logo) {
-        graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
-        graphics.DrawImage(g_state.brand_logo.get(), bounds);
-        return;
-    }
-
-    draw_fallback_player_logo(graphics, bounds);
-}
-
-LRESULT CALLBACK brand_header_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
-    switch (message) {
-    case WM_PAINT: {
-        PAINTSTRUCT ps = {};
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rect = {};
-        GetClientRect(hwnd, &rect);
-
-        Gdiplus::Graphics graphics(hdc);
-        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-        Gdiplus::SolidBrush background(Gdiplus::Color(255, 240, 240, 240));
-        graphics.FillRectangle(&background, 0, 0, rect.right - rect.left, rect.bottom - rect.top);
-
-        draw_player_logo(graphics, Gdiplus::RectF(12.0f, 7.0f, 44.0f, 44.0f));
-
-        Gdiplus::FontFamily font_family(L"Segoe UI");
-        Gdiplus::Font title_font(&font_family, 20.0f, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-        Gdiplus::SolidBrush title_brush(Gdiplus::Color(255, 35, 43, 51));
-        graphics.DrawString(L"DAT Player", -1, &title_font, Gdiplus::PointF(66.0f, 17.0f), &title_brush);
-
-        Gdiplus::Pen divider(Gdiplus::Color(255, 210, 210, 210), 1.0f);
-        graphics.DrawLine(&divider, 0, rect.bottom - 1, rect.right, rect.bottom - 1);
-        EndPaint(hwnd, &ps);
-        return 0;
-    }
-    default:
-        return DefWindowProcW(hwnd, message, wparam, lparam);
-    }
-}
-
 COLORREF integrity_dot_color() {
     const int state = current_integrity_dot_state();
     if (state == 0) {
@@ -1307,21 +1129,19 @@ LRESULT CALLBACK integrity_dot_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         GetClientRect(hwnd, &rect);
 
         FillRect(hdc, &rect, g_state.window_background_brush);
-        Gdiplus::Graphics graphics(hdc);
-        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
-        const float dot_width = static_cast<float>(rect.right - rect.left);
-        const float dot_height = static_cast<float>(rect.bottom - rect.top);
-        const float diameter = std::max(6.0f, std::min(dot_width, dot_height) - 6.0f);
-        const float left = (dot_width - diameter) * 0.5f;
-        const float top = (dot_height - diameter) * 0.5f;
+        const int dot_width = rect.right - rect.left;
+        const int dot_height = rect.bottom - rect.top;
+        const int diameter = std::max(6, std::min(dot_width, dot_height) - 6);
+        const int left = (dot_width - diameter) / 2;
+        const int top = (dot_height - diameter) / 2;
         const COLORREF color = integrity_dot_color();
-        Gdiplus::SolidBrush dot_brush(Gdiplus::Color(
-            255,
-            GetRValue(color),
-            GetGValue(color),
-            GetBValue(color)));
-        graphics.FillEllipse(&dot_brush, Gdiplus::RectF(left, top, diameter, diameter));
+        HBRUSH dot_brush = CreateSolidBrush(color);
+        HGDIOBJ old_brush = SelectObject(hdc, dot_brush);
+        HGDIOBJ old_pen = SelectObject(hdc, GetStockObject(NULL_PEN));
+        Ellipse(hdc, left, top, left + diameter, top + diameter);
+        SelectObject(hdc, old_pen);
+        SelectObject(hdc, old_brush);
+        DeleteObject(dot_brush);
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -1466,29 +1286,30 @@ LRESULT CALLBACK video_panel_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM
         const auto& frame = g_state.rendered_frame;
         if (!frame.pixels.empty() && frame.display_width > 0 && frame.display_height > 0) {
             const RECT draw_rect = fitted_rect(rect, frame.display_width, frame.display_height);
-            Gdiplus::Graphics graphics(memory_dc);
-            graphics.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
-            graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighSpeed);
-            graphics.SetInterpolationMode(Gdiplus::InterpolationModeBilinear);
-            graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
-            Gdiplus::Bitmap bitmap(
-                static_cast<INT>(frame.display_width),
-                static_cast<INT>(frame.display_height),
-                static_cast<INT>(frame.stride_bytes),
-                PixelFormat32bppRGB,
-                const_cast<BYTE*>(frame.pixels.data()));
-            graphics.DrawImage(
-                &bitmap,
-                Gdiplus::Rect(
-                    draw_rect.left,
-                    draw_rect.top,
-                    draw_rect.right - draw_rect.left,
-                    draw_rect.bottom - draw_rect.top),
+            BITMAPINFO bitmap_info = {};
+            bitmap_info.bmiHeader.biSize = sizeof(bitmap_info.bmiHeader);
+            bitmap_info.bmiHeader.biWidth = static_cast<LONG>(frame.display_width);
+            bitmap_info.bmiHeader.biHeight = -static_cast<LONG>(frame.display_height);
+            bitmap_info.bmiHeader.biPlanes = 1;
+            bitmap_info.bmiHeader.biBitCount = 32;
+            bitmap_info.bmiHeader.biCompression = BI_RGB;
+
+            SetStretchBltMode(memory_dc, HALFTONE);
+            SetBrushOrgEx(memory_dc, 0, 0, nullptr);
+            StretchDIBits(
+                memory_dc,
+                draw_rect.left,
+                draw_rect.top,
+                draw_rect.right - draw_rect.left,
+                draw_rect.bottom - draw_rect.top,
                 0,
                 0,
-                static_cast<INT>(frame.display_width),
-                static_cast<INT>(frame.display_height),
-                Gdiplus::UnitPixel);
+                static_cast<int>(frame.display_width),
+                static_cast<int>(frame.display_height),
+                frame.pixels.data(),
+                &bitmap_info,
+                DIB_RGB_COLORS,
+                SRCCOPY);
         } else {
             SetBkMode(memory_dc, TRANSPARENT);
             SetTextColor(memory_dc, RGB(210, 210, 210));
@@ -2774,8 +2595,6 @@ void layout_controls(HWND hwnd) {
     const int controls_top = timeline_top + timeline_height + 2;
     const int details_left = padding + video_width + padding;
 
-    MoveWindow(g_state.brand_header, 0, 0, width, 0, TRUE);
-    ShowWindow(g_state.brand_header, SW_HIDE);
     MoveWindow(g_state.file_label, 0, 0, 0, 0, TRUE);
     ShowWindow(g_state.file_label, SW_HIDE);
     const int file_text_width = std::max(80, video_width - integrity_dot_size - integrity_dot_gap);
@@ -2845,8 +2664,6 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             DEFAULT_PITCH | FF_DONTCARE,
             L"Segoe UI");
 
-        g_state.brand_header = CreateWindowW(L"DATBrandHeader", L"", WS_CHILD,
-            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBrandHeaderId)), nullptr, nullptr);
         g_state.file_label = CreateWindowW(L"STATIC", L"", WS_CHILD,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFileLabelId)), nullptr, nullptr);
         g_state.file_path_edit = CreateWindowW(L"STATIC", L"No DAT file loaded",
@@ -2888,7 +2705,6 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         g_state.status_label = CreateWindowW(L"STATIC", L"Ready. Open a compatible .dat file to begin.", WS_CHILD | WS_VISIBLE | SS_LEFT,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabelId)), nullptr, nullptr);
 
-        apply_default_font(g_state.brand_header);
         apply_default_font(g_state.file_label);
         apply_default_font(g_state.file_path_edit);
         apply_default_font(g_state.integrity_dot);
@@ -3321,12 +3137,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     controls.dwICC = ICC_BAR_CLASSES;
     InitCommonControlsEx(&controls);
 
-    Gdiplus::GdiplusStartupInput gdiplus_input;
-    if (Gdiplus::GdiplusStartup(&g_state.gdiplus_token, &gdiplus_input, nullptr) != Gdiplus::Ok) {
-        MessageBoxW(nullptr, L"Unable to initialize DAT Player graphics.", L"DAT Player", MB_OK | MB_ICONERROR);
-        return 1;
-    }
-
     g_state.window_background_brush = CreateSolidBrush(RGB(240, 240, 240));
 
     const wchar_t class_name[] = L"DATPlayerShellWindow";
@@ -3349,21 +3159,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     if (!RegisterClassExW(&window_class)) {
         MessageBoxW(nullptr, L"Unable to register DAT Player window class.", L"DAT Player", MB_OK | MB_ICONERROR);
-        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
-        return 1;
-    }
-
-    WNDCLASSEXW header_class = {};
-    header_class.cbSize = sizeof(header_class);
-    header_class.lpfnWndProc = brand_header_proc;
-    header_class.hInstance = instance;
-    header_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    header_class.hbrBackground = g_state.window_background_brush;
-    header_class.lpszClassName = L"DATBrandHeader";
-
-    if (!RegisterClassExW(&header_class)) {
-        MessageBoxW(nullptr, L"Unable to register DAT Player header.", L"DAT Player", MB_OK | MB_ICONERROR);
-        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
         return 1;
     }
 
@@ -3378,7 +3173,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     if (!RegisterClassExW(&integrity_dot_class)) {
         MessageBoxW(nullptr, L"Unable to register DAT Player status indicator.", L"DAT Player", MB_OK | MB_ICONERROR);
-        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
         return 1;
     }
 
@@ -3393,7 +3187,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     if (!RegisterClassExW(&details_panel_class)) {
         MessageBoxW(nullptr, L"Unable to register DAT Player details panel.", L"DAT Player", MB_OK | MB_ICONERROR);
-        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
         return 1;
     }
 
@@ -3408,11 +3201,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     if (!RegisterClassExW(&video_class)) {
         MessageBoxW(nullptr, L"Unable to register DAT Player video panel.", L"DAT Player", MB_OK | MB_ICONERROR);
-        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
         return 1;
     }
-
-    g_state.brand_logo = load_png_resource(instance, IDR_DATPLAYER_LOGO);
 
     HWND hwnd = CreateWindowExW(
         0,
@@ -3430,7 +3220,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     if (!hwnd) {
         MessageBoxW(nullptr, L"Unable to create DAT Player window.", L"DAT Player", MB_OK | MB_ICONERROR);
-        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
         return 1;
     }
 
@@ -3441,11 +3230,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
         TranslateMessage(&message);
         DispatchMessageW(&message);
-    }
-
-    if (g_state.gdiplus_token != 0) {
-        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
-        g_state.gdiplus_token = 0;
     }
 
     return static_cast<int>(message.wParam);

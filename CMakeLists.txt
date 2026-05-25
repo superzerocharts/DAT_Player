@@ -36,7 +36,7 @@ endfunction()
 function(dat_player_optimize_release_size target_name)
     if(MSVC)
         target_compile_options(${target_name} PRIVATE
-            $<$<CONFIG:Release>:/O1 /Ob1>)
+            $<$<CONFIG:Release>:/O1 /Ob1 /Gy /Gw /GF>)
         target_link_options(${target_name} PRIVATE
             $<$<CONFIG:Release>:/OPT:REF /OPT:ICF /INCREMENTAL:NO>)
     endif()
@@ -140,7 +140,6 @@ if(WIN32)
             dat_playback
             comctl32
             comdlg32
-            gdiplus
             shell32)
 
     target_compile_definitions(dat_player

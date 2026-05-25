@@ -5,7 +5,7 @@ files containing raw H.264 frame payloads.
 
 DAT Player is intentionally small and portable. It has no FFmpeg, mpv, VLC, Qt,
 Electron, .NET, conversion workflow, bundled decoder, or external media-player
-runtime dependency. Playback uses Windows system components: Win32, COM, GDI+,
+runtime dependency. Playback uses Windows system components: Win32, COM, GDI,
 and Media Foundation.
 
 ## Current Features

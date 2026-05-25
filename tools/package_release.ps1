@@ -58,7 +58,7 @@ if ($dumpbin) {
     & $dumpbin.Source /DEPENDENTS (Join-Path $fullDistPath "DatPlayer.exe")
 } else {
     Write-Host "dumpbin.exe was not found on PATH; dependency listing skipped."
-    Write-Host "Expected runtime dependencies are Windows system DLLs such as Media Foundation, GDI+, COM, and Win32 libraries."
+    Write-Host "Expected runtime dependencies are Windows system DLLs such as Media Foundation, GDI, COM, and Win32 libraries."
 }
 
 $packagedFiles = Get-ChildItem -LiteralPath $fullDistPath -File | Select-Object -ExpandProperty Name
