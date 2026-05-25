@@ -375,6 +375,29 @@ int minimum_video_width_for_controls() {
     return button_width * 5 + button_gap * 4;
 }
 
+int minimum_client_width() {
+    constexpr int padding = 14;
+    if (!g_state.details_visible) {
+        return minimum_video_width_for_controls() + padding * 2;
+    }
+    return minimum_video_width_for_controls() + details_panel_width_for_client_width(960) + padding * 3;
+}
+
+int minimum_client_height() {
+    return 430;
+}
+
+SIZE window_size_for_client_size(HWND hwnd, int client_width, int client_height) {
+    RECT window_rect = {0, 0, client_width, client_height};
+    const auto style = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE));
+    const auto ex_style = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
+    AdjustWindowRectEx(&window_rect, style, FALSE, ex_style);
+    return {
+        window_rect.right - window_rect.left,
+        window_rect.bottom - window_rect.top
+    };
+}
+
 int client_width_for_video_width(int video_width, bool details_visible) {
     constexpr int padding = 14;
     const int preserved_video_width = std::max(video_width, minimum_video_width_for_controls());
@@ -804,8 +827,6 @@ void order_details_controls() {
         return;
     }
 
-    SetWindowPos(g_state.details_group, HWND_BOTTOM, 0, 0, 0, 0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     SetWindowPos(g_state.info_label, HWND_TOP, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     SetWindowPos(g_state.decode_test_button, HWND_TOP, 0, 0, 0, 0,
@@ -1269,18 +1290,123 @@ LRESULT CALLBACK integrity_dot_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         GetClientRect(hwnd, &rect);
 
         FillRect(hdc, &rect, g_state.window_background_brush);
-        const int dot_width = static_cast<int>(rect.right - rect.left);
-        const int dot_height = static_cast<int>(rect.bottom - rect.top);
-        const int diameter = std::max(6, std::min(dot_width, dot_height) - 4);
-        const int left = (rect.right - rect.left - diameter) / 2;
-        const int top = (rect.bottom - rect.top - diameter) / 2;
-        HBRUSH dot_brush = CreateSolidBrush(integrity_dot_color());
-        HBRUSH old_brush = static_cast<HBRUSH>(SelectObject(hdc, dot_brush));
-        HPEN old_pen = static_cast<HPEN>(SelectObject(hdc, GetStockObject(NULL_PEN)));
-        Ellipse(hdc, left, top, left + diameter, top + diameter);
-        SelectObject(hdc, old_pen);
+        Gdiplus::Graphics graphics(hdc);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        const float dot_width = static_cast<float>(rect.right - rect.left);
+        const float dot_height = static_cast<float>(rect.bottom - rect.top);
+        const float diameter = std::max(6.0f, std::min(dot_width, dot_height) - 6.0f);
+        const float left = (dot_width - diameter) * 0.5f;
+        const float top = (dot_height - diameter) * 0.5f;
+        const COLORREF color = integrity_dot_color();
+        Gdiplus::SolidBrush dot_brush(Gdiplus::Color(
+            255,
+            GetRValue(color),
+            GetGValue(color),
+            GetBValue(color)));
+        graphics.FillEllipse(&dot_brush, Gdiplus::RectF(left, top, diameter, diameter));
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+
+    default:
+        return DefWindowProcW(hwnd, message, wparam, lparam);
+    }
+}
+
+void layout_details_panel() {
+    if (!g_state.details_group) {
+        return;
+    }
+
+    RECT rect = {};
+    GetClientRect(g_state.details_group, &rect);
+    constexpr int padding = 12;
+    constexpr int title_height = 24;
+    constexpr int button_height = 32;
+    constexpr int button_width = 104;
+    constexpr int button_gap = 8;
+    const int width = std::max<int>(1, rect.right - rect.left);
+    const int height = std::max<int>(1, rect.bottom - rect.top);
+    const int inner_left = padding;
+    const int inner_width = std::max(1, width - padding * 2);
+    const int buttons_top = std::max(title_height + padding, height - padding - button_height);
+    const int edit_top = title_height + padding;
+    const int edit_height = std::max(60, buttons_top - edit_top - 10);
+
+    MoveWindow(g_state.info_label, inner_left, edit_top, inner_width, edit_height, TRUE);
+    MoveWindow(g_state.decode_test_button, inner_left, buttons_top, button_width, button_height, TRUE);
+    MoveWindow(
+        g_state.render_first_frame_button,
+        inner_left + button_width + button_gap,
+        buttons_top,
+        button_width,
+        button_height,
+        TRUE);
+}
+
+LRESULT CALLBACK details_panel_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    switch (message) {
+    case WM_SIZE:
+        layout_details_panel();
+        InvalidateRect(hwnd, nullptr, TRUE);
+        return 0;
+
+    case WM_COMMAND:
+        if (g_state.hwnd) {
+            return SendMessageW(g_state.hwnd, message, wparam, lparam);
+        }
+        return 0;
+
+    case WM_CTLCOLOREDIT: {
+        HDC hdc = reinterpret_cast<HDC>(wparam);
+        SetBkColor(hdc, RGB(255, 255, 255));
+        SetTextColor(hdc, RGB(35, 43, 51));
+        return reinterpret_cast<LRESULT>(GetStockObject(WHITE_BRUSH));
+    }
+
+    case WM_CTLCOLORSTATIC: {
+        HDC hdc = reinterpret_cast<HDC>(wparam);
+        SetTextColor(hdc, RGB(35, 43, 51));
+        SetBkMode(hdc, TRANSPARENT);
+        return reinterpret_cast<LRESULT>(g_state.window_background_brush);
+    }
+
+    case WM_ERASEBKGND: {
+        HDC hdc = reinterpret_cast<HDC>(wparam);
+        RECT rect = {};
+        GetClientRect(hwnd, &rect);
+        FillRect(hdc, &rect, g_state.window_background_brush);
+        return 1;
+    }
+
+    case WM_PAINT: {
+        PAINTSTRUCT ps = {};
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rect = {};
+        GetClientRect(hwnd, &rect);
+        FillRect(hdc, &rect, g_state.window_background_brush);
+
+        RECT border = rect;
+        border.left += 1;
+        border.top += 10;
+        border.right -= 1;
+        border.bottom -= 1;
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(160, 160, 160));
+        HPEN old_pen = static_cast<HPEN>(SelectObject(hdc, pen));
+        HBRUSH old_brush = static_cast<HBRUSH>(SelectObject(hdc, GetStockObject(NULL_BRUSH)));
+        Rectangle(hdc, border.left, border.top, border.right, border.bottom);
         SelectObject(hdc, old_brush);
-        DeleteObject(dot_brush);
+        SelectObject(hdc, old_pen);
+        DeleteObject(pen);
+
+        RECT title_rect = {12, 0, rect.right - 12, 22};
+        SetBkColor(hdc, RGB(240, 240, 240));
+        SetTextColor(hdc, RGB(35, 43, 51));
+        SetBkMode(hdc, OPAQUE);
+        HFONT old_font = static_cast<HFONT>(SelectObject(hdc, g_state.ui_font));
+        DrawTextW(hdc, L"Details / Diagnostics", -1, &title_rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(hdc, old_font);
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -2532,8 +2658,9 @@ bool resize_to_default_size() {
     const int work_width = work.right - work.left;
     const int work_height = work.bottom - work.top;
 
-    const int desired_width = std::min(kDefaultWindowWidth, work_width);
-    const int desired_height = std::min(kDefaultWindowHeight, work_height);
+    const SIZE min_window = window_size_for_client_size(g_state.hwnd, minimum_client_width(), minimum_client_height());
+    const int desired_width = std::min<int>(std::max<int>(kDefaultWindowWidth, min_window.cx), work_width);
+    const int desired_height = std::min<int>(std::max<int>(kDefaultWindowHeight, min_window.cy), work_height);
     const int x = work.left + std::max(0, (work_width - desired_width) / 2);
     const int y = work.top + std::max(0, (work_height - desired_height) / 2);
 
@@ -2575,8 +2702,6 @@ void layout_controls(HWND hwnd) {
     const int speed_button_width = button_width;
     const int actual_size_button_width = button_width;
     const int details_toggle_button_width = button_width;
-    const int test_button_width = button_width;
-    const int render_button_width = button_width;
     const int button_height = 32;
     const int timeline_height = 58;
     const int trackbar_height = 28;
@@ -2588,20 +2713,25 @@ void layout_controls(HWND hwnd) {
     const int content_top = file_top + file_row_height + 8;
     const int status_top = rect.bottom - status_height - 6;
     const int content_bottom = status_top - 10;
-    const int details_width = g_state.details_visible ? details_panel_width_for_client_width(width) : 0;
+    int details_width = 0;
+    if (g_state.details_visible) {
+        details_width = details_panel_width_for_client_width(width);
+        const int max_details_width = width - padding * 3 - 1;
+        if (max_details_width < details_width) {
+            details_width = std::max(1, max_details_width);
+        }
+    }
     const int controls_min_width = minimum_video_width_for_controls();
-    const int video_width = std::max(controls_min_width, width - padding * 2 - (g_state.details_visible ? padding + details_width : 0));
+    const int available_video_width = width - padding * 2 - (g_state.details_visible ? padding + details_width : 0);
+    const int video_width = g_state.details_visible
+        ? std::max(1, available_video_width)
+        : std::max(controls_min_width, available_video_width);
     const int content_height = std::max(220, content_bottom - content_top);
     const int controls_height = button_height + 8;
     const int video_height = std::max(120, content_height - timeline_height - controls_height - 16);
     const int timeline_top = content_top + video_height + 8;
     const int controls_top = timeline_top + timeline_height + 2;
     const int details_left = padding + video_width + padding;
-    const int details_inner_left = details_left + 12;
-    const int details_inner_top = content_top + 24;
-    const int details_inner_width = details_width - 24;
-    const int details_buttons_top = content_bottom - button_height - 12;
-    const int details_text_height = std::max(80, details_buttons_top - details_inner_top - 10);
 
     MoveWindow(g_state.brand_header, 0, 0, width, 0, TRUE);
     ShowWindow(g_state.brand_header, SW_HIDE);
@@ -2636,9 +2766,7 @@ void layout_controls(HWND hwnd) {
     MoveWindow(g_state.details_toggle_button, button_left, controls_top, details_toggle_button_width, button_height, TRUE);
     if (g_state.details_visible) {
         MoveWindow(g_state.details_group, details_left, content_top, details_width, content_height, TRUE);
-        MoveWindow(g_state.info_label, details_inner_left, details_inner_top, details_inner_width, details_text_height, TRUE);
-        MoveWindow(g_state.decode_test_button, details_inner_left, details_buttons_top, test_button_width, button_height, TRUE);
-        MoveWindow(g_state.render_first_frame_button, details_inner_left + test_button_width + 8, details_buttons_top, render_button_width, button_height, TRUE);
+        layout_details_panel();
     }
     ShowWindow(g_state.details_group, g_state.details_visible ? SW_SHOW : SW_HIDE);
     ShowWindow(g_state.info_label, g_state.details_visible ? SW_SHOW : SW_HIDE);
@@ -2694,12 +2822,12 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kActualSizeButtonId)), nullptr, nullptr);
         g_state.details_toggle_button = CreateWindowW(L"BUTTON", L"Show Details", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDetailsToggleButtonId)), nullptr, nullptr);
-        g_state.details_group = CreateWindowW(L"BUTTON", L"Details / Diagnostics", WS_CHILD | BS_GROUPBOX,
+        g_state.details_group = CreateWindowW(L"DATDetailsPanel", L"", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDetailsGroupId)), nullptr, nullptr);
         g_state.decode_test_button = CreateWindowW(L"BUTTON", L"Decode Test", WS_CHILD | WS_CLIPSIBLINGS | WS_DISABLED | BS_PUSHBUTTON,
-            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDecodeButtonId)), nullptr, nullptr);
+            0, 0, 0, 0, g_state.details_group, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDecodeButtonId)), nullptr, nullptr);
         g_state.render_first_frame_button = CreateWindowW(L"BUTTON", L"Render Frame", WS_CHILD | WS_CLIPSIBLINGS | WS_DISABLED | BS_PUSHBUTTON,
-            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRenderFirstFrameButtonId)), nullptr, nullptr);
+            0, 0, 0, 0, g_state.details_group, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRenderFirstFrameButtonId)), nullptr, nullptr);
         g_state.timeline = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | WS_DISABLED | TBS_NOTICKS,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTimelineId)), nullptr, nullptr);
         g_state.current_time_label = CreateWindowW(L"STATIC", L"00:00", WS_CHILD | WS_VISIBLE | SS_LEFT,
@@ -2714,7 +2842,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         DragAcceptFiles(g_state.video_panel, TRUE);
         g_state.info_label = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
             WS_CHILD | WS_CLIPSIBLINGS | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
-            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kInfoLabelId)), nullptr, nullptr);
+            0, 0, 0, 0, g_state.details_group, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kInfoLabelId)), nullptr, nullptr);
         g_state.status_label = CreateWindowW(L"STATIC", L"Ready. Open a compatible .dat file to begin.", WS_CHILD | WS_VISIBLE | SS_LEFT,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabelId)), nullptr, nullptr);
 
@@ -2754,6 +2882,14 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         layout_controls(hwnd);
         refresh_after_resize();
         return 0;
+
+    case WM_GETMINMAXINFO: {
+        auto* minmax = reinterpret_cast<MINMAXINFO*>(lparam);
+        const SIZE min_window = window_size_for_client_size(hwnd, minimum_client_width(), minimum_client_height());
+        minmax->ptMinTrackSize.x = min_window.cx;
+        minmax->ptMinTrackSize.y = min_window.cy;
+        return 0;
+    }
 
     case WM_SIZE:
         layout_controls(hwnd);
@@ -3195,6 +3331,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     if (!RegisterClassExW(&integrity_dot_class)) {
         MessageBoxW(nullptr, L"Unable to register DAT Player status indicator.", L"DAT Player", MB_OK | MB_ICONERROR);
+        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
+        return 1;
+    }
+
+    WNDCLASSEXW details_panel_class = {};
+    details_panel_class.cbSize = sizeof(details_panel_class);
+    details_panel_class.style = CS_HREDRAW | CS_VREDRAW;
+    details_panel_class.lpfnWndProc = details_panel_proc;
+    details_panel_class.hInstance = instance;
+    details_panel_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    details_panel_class.hbrBackground = g_state.window_background_brush;
+    details_panel_class.lpszClassName = L"DATDetailsPanel";
+
+    if (!RegisterClassExW(&details_panel_class)) {
+        MessageBoxW(nullptr, L"Unable to register DAT Player details panel.", L"DAT Player", MB_OK | MB_ICONERROR);
         Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
         return 1;
     }
