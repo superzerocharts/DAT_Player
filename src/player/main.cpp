@@ -58,7 +58,7 @@ constexpr UINT kIntegrityFinishedMessage = WM_APP + 6;
 constexpr UINT_PTR kTimelinePreviewTimerId = 42;
 constexpr UINT_PTR kResizeRefreshTimerId = 43;
 constexpr int kTrackbarMax = 10000;
-constexpr int kDefaultWindowWidth = 646;
+constexpr int kDefaultWindowWidth = 670;
 constexpr int kDefaultWindowHeight = 584;
 constexpr auto kPreviewThrottle = std::chrono::milliseconds(200);
 constexpr auto kDiagnosticsUpdateThrottle = std::chrono::milliseconds(500);
@@ -799,6 +799,21 @@ void update_integrity_dot() {
     }
 }
 
+void order_details_controls() {
+    if (!g_state.details_visible) {
+        return;
+    }
+
+    SetWindowPos(g_state.details_group, HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(g_state.info_label, HWND_TOP, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(g_state.decode_test_button, HWND_TOP, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(g_state.render_first_frame_button, HWND_TOP, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
 void update_speed_button() {
     if (g_state.speed_button) {
         const auto text = next_speed_button_text();
@@ -1261,12 +1276,10 @@ LRESULT CALLBACK integrity_dot_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         const int top = (rect.bottom - rect.top - diameter) / 2;
         HBRUSH dot_brush = CreateSolidBrush(integrity_dot_color());
         HBRUSH old_brush = static_cast<HBRUSH>(SelectObject(hdc, dot_brush));
-        HPEN border_pen = CreatePen(PS_SOLID, 1, RGB(110, 110, 110));
-        HPEN old_pen = static_cast<HPEN>(SelectObject(hdc, border_pen));
+        HPEN old_pen = static_cast<HPEN>(SelectObject(hdc, GetStockObject(NULL_PEN)));
         Ellipse(hdc, left, top, left + diameter, top + diameter);
         SelectObject(hdc, old_pen);
         SelectObject(hdc, old_brush);
-        DeleteObject(border_pen);
         DeleteObject(dot_brush);
         EndPaint(hwnd, &ps);
         return 0;
@@ -2392,7 +2405,16 @@ void toggle_details() {
     update_details_toggle_button();
     SetWindowPos(g_state.hwnd, nullptr, x, y, desired_width, desired_height, SWP_NOZORDER | SWP_NOACTIVATE);
     layout_controls(g_state.hwnd);
+    if (show_details) {
+        g_state.displayed_info_text.clear();
+        order_details_controls();
+    }
     update_info(show_details);
+    if (show_details) {
+        RedrawWindow(g_state.info_label, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
+        RedrawWindow(g_state.decode_test_button, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
+        RedrawWindow(g_state.render_first_frame_button, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
+    }
     InvalidateRect(g_state.hwnd, nullptr, TRUE);
     if (g_state.video_panel) {
         InvalidateRect(g_state.video_panel, nullptr, TRUE);
@@ -2622,6 +2644,7 @@ void layout_controls(HWND hwnd) {
     ShowWindow(g_state.info_label, g_state.details_visible ? SW_SHOW : SW_HIDE);
     ShowWindow(g_state.decode_test_button, g_state.details_visible ? SW_SHOW : SW_HIDE);
     ShowWindow(g_state.render_first_frame_button, g_state.details_visible ? SW_SHOW : SW_HIDE);
+    order_details_controls();
     ShowWindow(g_state.integrity_dot, SW_SHOW);
     update_actual_size_button();
     update_details_toggle_button();
@@ -2671,7 +2694,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kActualSizeButtonId)), nullptr, nullptr);
         g_state.details_toggle_button = CreateWindowW(L"BUTTON", L"Show Details", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDetailsToggleButtonId)), nullptr, nullptr);
-        g_state.details_group = CreateWindowW(L"BUTTON", L"Details / Diagnostics", WS_CHILD | WS_CLIPSIBLINGS | BS_GROUPBOX,
+        g_state.details_group = CreateWindowW(L"BUTTON", L"Details / Diagnostics", WS_CHILD | BS_GROUPBOX,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDetailsGroupId)), nullptr, nullptr);
         g_state.decode_test_button = CreateWindowW(L"BUTTON", L"Decode Test", WS_CHILD | WS_CLIPSIBLINGS | WS_DISABLED | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDecodeButtonId)), nullptr, nullptr);
