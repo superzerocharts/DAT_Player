@@ -61,7 +61,7 @@ Write-Host "  $fullDistPath"
 Write-Host "Files:"
 $packagedFiles | ForEach-Object { Write-Host "  $_" }
 
-if ($packagedFiles -contains "dat_decode_smoke_test.exe" -or $packagedFiles -contains "dat_indexer_tests.exe") {
+if ($packagedFiles -contains "dat_decode_test.exe" -or $packagedFiles -contains "dat_indexer_tests.exe") {
     throw "Developer test executables should not be in the end-user release folder."
 }
 

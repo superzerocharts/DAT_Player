@@ -19,7 +19,7 @@ struct H264PayloadInspection {
     std::uint64_t payloads_inspected = 0;
 };
 
-struct DecodeSmokeTestResult {
+struct DecodeTestResult {
     bool media_foundation_initialized = false;
     bool decoder_found = false;
     bool payload_format_supported = false;
@@ -34,7 +34,7 @@ struct DecodeSmokeTestResult {
 };
 
 struct FirstFrameRenderResult {
-    DecodeSmokeTestResult decode{};
+    DecodeTestResult decode{};
     BgraVideoFrame frame{};
     bool frame_available = false;
     std::wstring message;
@@ -56,9 +56,9 @@ struct ForwardPlaybackFrame {
 
 using ForwardPlaybackCallback = std::function<bool(ForwardPlaybackFrame&& frame)>;
 
-class H264DecodeSmokeTester {
+class H264DecodeTester {
 public:
-    DecodeSmokeTestResult run(
+    DecodeTestResult run(
         const std::filesystem::path& dat_path,
         const DatFrameIndex& index,
         std::size_t max_frames_to_submit = 120) const;
@@ -68,7 +68,7 @@ public:
         const DatFrameIndex& index,
         std::size_t max_frames_to_submit = 120) const;
 
-    DecodeSmokeTestResult play_forward(
+    DecodeTestResult play_forward(
         const std::filesystem::path& dat_path,
         const DatFrameIndex& index,
         const ForwardPlaybackOptions& options,

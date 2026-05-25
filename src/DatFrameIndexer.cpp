@@ -126,7 +126,7 @@ void apply_sidecar_metadata(DatFrameIndex& index, RecordingSidecarMetadata sidec
     const bool sidecar_has_range = metadata.sidecar.has_start_ticks && metadata.sidecar.has_end_ticks;
     if (!metadata.has_dat_frame_ticks) {
         metadata.confidence = sidecar_has_range ? RecordingMetadataConfidence::Medium : RecordingMetadataConfidence::None;
-        metadata.source = sidecar_has_range ? ".sef2 sidecar" : metadata.source;
+        metadata.source = sidecar_has_range ? ".sef2 data" : metadata.source;
         if (sidecar_has_range && metadata.sidecar.end_ticks > metadata.sidecar.start_ticks) {
             metadata.dat_duration_seconds =
                 static_cast<double>(metadata.sidecar.end_ticks - metadata.sidecar.start_ticks) / kDotNetTicksPerSecond;
@@ -144,7 +144,7 @@ void apply_sidecar_metadata(DatFrameIndex& index, RecordingSidecarMetadata sidec
             : metadata.sidecar.end_ticks - metadata.last_frame_ticks;
         if (start_delta <= tolerance_ticks && end_delta <= tolerance_ticks) {
             metadata.confidence = RecordingMetadataConfidence::High;
-            metadata.source = "DAT frame ticks + .sef2 sidecar";
+            metadata.source = "DAT frame ticks + .sef2 data";
         }
     }
 }

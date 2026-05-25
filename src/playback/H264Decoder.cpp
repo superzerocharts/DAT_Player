@@ -84,7 +84,7 @@ private:
 
 class MfSession {
 public:
-    explicit MfSession(DecodeSmokeTestResult& result)
+    explicit MfSession(DecodeTestResult& result)
         : result_(result) {
         const HRESULT com_hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         if (SUCCEEDED(com_hr)) {
@@ -114,7 +114,7 @@ public:
     }
 
 private:
-    DecodeSmokeTestResult& result_;
+    DecodeTestResult& result_;
     bool started_ = false;
     bool com_initialized_ = false;
 };
@@ -273,14 +273,14 @@ std::vector<std::vector<std::uint8_t>> collect_payloads(
     const std::filesystem::path& dat_path,
     const DatFrameIndex& index,
     std::size_t max_frames,
-    DecodeSmokeTestResult& result) {
+    DecodeTestResult& result) {
     if (index.frames.empty()) {
         throw std::runtime_error("No indexed H264/I264 frame records are loaded.");
     }
 
     std::ifstream input(dat_path, std::ios::binary);
     if (!input) {
-        throw std::runtime_error("Unable to open DAT file for decode smoke test.");
+        throw std::runtime_error("Unable to open DAT file for decode test.");
     }
 
     const auto file_size = static_cast<std::uint64_t>(std::filesystem::file_size(dat_path));
@@ -288,7 +288,7 @@ std::vector<std::vector<std::uint8_t>> collect_payloads(
         return frame.keyframe;
     });
     if (first_keyframe == index.frames.end()) {
-        throw std::runtime_error("No H264 keyframe record is available to start the decode smoke test.");
+        throw std::runtime_error("No H264 keyframe record is available to start the decode test.");
     }
 
     std::vector<std::vector<std::uint8_t>> payloads;
@@ -335,7 +335,7 @@ std::vector<std::vector<std::uint8_t>> collect_payloads(
     return payloads;
 }
 
-ComPtr<IMFTransform> create_h264_decoder(DecodeSmokeTestResult& result) {
+ComPtr<IMFTransform> create_h264_decoder(DecodeTestResult& result) {
     MFT_REGISTER_TYPE_INFO input_type = {};
     input_type.guidMajorType = MFMediaType_Video;
     input_type.guidSubtype = MFVideoFormat_H264;
@@ -459,7 +459,7 @@ void decode_sample_to_bgra(
         throw std::runtime_error("Decoded output media type has no subtype.");
     }
     if (subtype != MFVideoFormat_NV12) {
-        throw std::runtime_error("First-frame render smoke test currently supports NV12 output only.");
+        throw std::runtime_error("First-frame render test currently supports NV12 output only.");
     }
 
     UINT32 decoded_width = 0;
@@ -540,7 +540,7 @@ void decode_sample_to_bgra(
 
 bool try_process_output(
     IMFTransform* decoder,
-    DecodeSmokeTestResult& result,
+    DecodeTestResult& result,
     const DatFrameIndex* capture_index = nullptr,
     BgraVideoFrame* capture_frame = nullptr,
     OutputFrameSink* output_sink = nullptr) {
@@ -647,7 +647,7 @@ bool try_process_output(
 void submit_payloads(
     IMFTransform* decoder,
     const std::vector<std::vector<std::uint8_t>>& payloads,
-    DecodeSmokeTestResult& result,
+    DecodeTestResult& result,
     const DatFrameIndex* capture_index = nullptr,
     BgraVideoFrame* capture_frame = nullptr) {
     decoder->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
@@ -698,7 +698,7 @@ std::size_t find_decode_start_frame(const DatFrameIndex& index, std::uint64_t re
     throw std::runtime_error("No H264 keyframe record is available to start playback.");
 }
 
-bool pump_decoder_output(IMFTransform* decoder, DecodeSmokeTestResult& result, OutputFrameSink& sink) {
+bool pump_decoder_output(IMFTransform* decoder, DecodeTestResult& result, OutputFrameSink& sink) {
     while (!sink.stop_requested && try_process_output(decoder, result, nullptr, nullptr, &sink)) {
     }
     return !sink.stop_requested;
@@ -706,11 +706,11 @@ bool pump_decoder_output(IMFTransform* decoder, DecodeSmokeTestResult& result, O
 
 } // namespace
 
-DecodeSmokeTestResult H264DecodeSmokeTester::run(
+DecodeTestResult H264DecodeTester::run(
     const std::filesystem::path& dat_path,
     const DatFrameIndex& index,
     std::size_t max_frames_to_submit) const {
-    DecodeSmokeTestResult result;
+    DecodeTestResult result;
 
     try {
         MfSession session(result);
@@ -721,7 +721,7 @@ DecodeSmokeTestResult H264DecodeSmokeTester::run(
 
         if (result.decoded_any_frame) {
             std::wostringstream message;
-            message << L"Decode smoke test produced " << result.frames_decoded << L" decoded sample(s).";
+            message << L"Decode test produced " << result.frames_decoded << L" decoded sample(s).";
             result.message = message.str();
         } else {
             result.message = L"Media Foundation accepted input, but no decoded sample was produced.";
@@ -733,7 +733,7 @@ DecodeSmokeTestResult H264DecodeSmokeTester::run(
     return result;
 }
 
-FirstFrameRenderResult H264DecodeSmokeTester::render_first_frame(
+FirstFrameRenderResult H264DecodeTester::render_first_frame(
     const std::filesystem::path& dat_path,
     const DatFrameIndex& index,
     std::size_t max_frames_to_submit) const {
@@ -767,12 +767,12 @@ FirstFrameRenderResult H264DecodeSmokeTester::render_first_frame(
     return render_result;
 }
 
-DecodeSmokeTestResult H264DecodeSmokeTester::play_forward(
+DecodeTestResult H264DecodeTester::play_forward(
     const std::filesystem::path& dat_path,
     const DatFrameIndex& index,
     const ForwardPlaybackOptions& options,
     const ForwardPlaybackCallback& on_frame) const {
-    DecodeSmokeTestResult result;
+    DecodeTestResult result;
 
     try {
         if (!on_frame) {

@@ -12,7 +12,7 @@
 
 namespace {
 
-void print_result(const dat_player::playback::DecodeSmokeTestResult& result) {
+void print_result(const dat_player::playback::DecodeTestResult& result) {
     std::wcout << L"Media Foundation initialized: " << (result.media_foundation_initialized ? L"yes" : L"no") << L"\n";
     std::wcout << L"H.264 decoder found: " << (result.decoder_found ? L"yes" : L"no") << L"\n";
     std::wcout << L"Annex B start codes found: " << (result.inspection.saw_start_code ? L"yes" : L"no") << L"\n";
@@ -45,7 +45,7 @@ void print_render_result(const dat_player::playback::FirstFrameRenderResult& res
     std::wcout << L"Render result: " << result.message << L"\n";
 }
 
-void print_playback_result(const dat_player::playback::DecodeSmokeTestResult& result, std::uint64_t frames_rendered) {
+void print_playback_result(const dat_player::playback::DecodeTestResult& result, std::uint64_t frames_rendered) {
     print_result(result);
     std::wcout << L"Forward playback frames rendered callback count: " << frames_rendered << L"\n";
 }
@@ -117,24 +117,24 @@ void write_bgra_bmp(const std::filesystem::path& output_path, const dat_player::
 
 int wmain(int argc, wchar_t* argv[]) {
     if (argc < 2) {
-        std::wcerr << L"Usage: dat_decode_smoke_test.exe <path-to-dat> [--render|--playback-smoke [max-frames]|--seek-smoke <frame-index>|--dump-frame-bmp <frame-index> <output.bmp>]\n";
+        std::wcerr << L"Usage: dat_decode_test.exe <path-to-dat> [--render|--playback-test [max-frames]|--seek-test <frame-index>|--dump-frame-bmp <frame-index> <output.bmp>]\n";
         return 2;
     }
 
     const std::filesystem::path dat_path(argv[1]);
     const bool render_first_frame = argc >= 3 && std::wstring(argv[2]) == L"--render";
-    const bool playback_smoke = argc >= 3 && std::wstring(argv[2]) == L"--playback-smoke";
-    const bool seek_smoke = argc >= 3 && std::wstring(argv[2]) == L"--seek-smoke";
+    const bool playback_test = argc >= 3 && std::wstring(argv[2]) == L"--playback-test";
+    const bool seek_test = argc >= 3 && std::wstring(argv[2]) == L"--seek-test";
     const bool dump_frame_bmp = argc >= 3 && std::wstring(argv[2]) == L"--dump-frame-bmp";
     std::uint64_t max_playback_frames = 180;
-    if (playback_smoke && argc >= 4) {
+    if (playback_test && argc >= 4) {
         max_playback_frames = std::wcstoull(argv[3], nullptr, 10);
         if (max_playback_frames == 0) {
             max_playback_frames = 180;
         }
     }
     std::uint64_t seek_target = 0;
-    if (seek_smoke && argc >= 4) {
+    if (seek_test && argc >= 4) {
         seek_target = std::wcstoull(argv[3], nullptr, 10);
     }
     std::uint64_t dump_target = 0;
@@ -155,13 +155,13 @@ int wmain(int argc, wchar_t* argv[]) {
             std::wcout << L"First resolution: " << index.frames.front().width << L" x " << index.frames.front().height << L"\n";
         }
 
-        dat_player::playback::H264DecodeSmokeTester tester;
+        dat_player::playback::H264DecodeTester tester;
         if (render_first_frame) {
             const auto result = tester.render_first_frame(dat_path, index);
             print_render_result(result);
             return result.frame_available ? 0 : 1;
         }
-        if (playback_smoke) {
+        if (playback_test) {
             dat_player::playback::ForwardPlaybackOptions options;
             std::uint64_t rendered = 0;
             const auto result = tester.play_forward(dat_path, index, options, [&](dat_player::playback::ForwardPlaybackFrame&& frame) {
@@ -178,7 +178,7 @@ int wmain(int argc, wchar_t* argv[]) {
             print_playback_result(result, rendered);
             return rendered > 1 && result.decoded_any_frame ? 0 : 1;
         }
-        if (seek_smoke) {
+        if (seek_test) {
             if (index.frames.empty()) {
                 std::wcerr << L"No indexed frames to seek.\n";
                 return 1;
@@ -234,7 +234,7 @@ int wmain(int argc, wchar_t* argv[]) {
         print_result(result);
         return result.decoded_any_frame ? 0 : 1;
     } catch (const std::exception& ex) {
-        std::cerr << "Smoke test failed: " << ex.what() << "\n";
+        std::cerr << "Decode test failed: " << ex.what() << "\n";
         return 1;
     }
 }

@@ -10,7 +10,7 @@ How to use:
 5. Use the timeline to scrub through the video.
 6. Use the x2/x4/x8/x16 button to change playback speed.
 7. Use Actual Size to resize the window to the video's native resolution when screen space allows.
-8. Use Show Details only if you need technical file or metadata information.
+8. Use Show Details only if you need technical file information.
 
 Recording time:
 If matching recording data is available, the timeline shows the original recording date/time. If that data is not available, the player falls back to elapsed video time.

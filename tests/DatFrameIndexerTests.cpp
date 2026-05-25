@@ -293,7 +293,7 @@ void marker_minus_17_dotnet_ticks_drive_timing() {
     require(std::fabs(index.summary.duration_seconds - 2.0) < 0.0001, "dotnet duration estimate mismatch");
     require(std::fabs(index.summary.estimated_fps - 1.0) < 0.0001, "dotnet fps estimate mismatch");
     require(index.summary.recording_metadata.confidence == RecordingMetadataConfidence::Medium, "DAT-only confidence should be medium");
-    require(!index.summary.recording_metadata.sidecar.has_display_offset_minutes, "DAT-only metadata should not claim archive display offset");
+    require(!index.summary.recording_metadata.sidecar.has_display_offset_minutes, "DAT-only data should not claim archive display offset");
 }
 
 void marker_minus_16_legacy_timing_remains_fallback() {
@@ -322,7 +322,7 @@ void sef2_parser_extracts_recording_metadata() {
         "</root>";
 
     const auto metadata = dat_player::parse_sef2_metadata_xml(xml);
-    require(metadata.available, "expected sidecar metadata");
+    require(metadata.available, "expected .sef2 data");
     require(metadata.has_start_ticks && metadata.start_ticks == 639148479165410000ULL, "start tick mismatch");
     require(metadata.has_end_ticks && metadata.end_ticks == 639148482147380000ULL, "end tick mismatch");
     require(metadata.camera_name == "205 Choke Point", "camera name should decode from base64");
@@ -371,9 +371,9 @@ void dat_ticks_matching_sef2_are_high_confidence() {
         "<end>2026-05-20T04:30:14.7380000</end></root>");
 
     const auto index = DatFrameIndexer().index_file(dat_path);
-    require(index.summary.recording_metadata.confidence == RecordingMetadataConfidence::High, "matching sidecar should be high confidence");
-    require(index.summary.recording_metadata.sidecar.available, "sidecar should be available");
-    require(index.summary.recording_metadata.source == "DAT frame ticks + .sef2 sidecar", "metadata source mismatch");
+    require(index.summary.recording_metadata.confidence == RecordingMetadataConfidence::High, "matching .sef2 data should be high confidence");
+    require(index.summary.recording_metadata.sidecar.available, ".sef2 data should be available");
+    require(index.summary.recording_metadata.source == "DAT frame ticks + .sef2 data", "data source mismatch");
     std::filesystem::remove_all(dir);
 }
 
@@ -392,9 +392,9 @@ void mismatched_sef2_keeps_dat_metadata_source() {
         "<end>2026-05-21T04:30:14.7380000</end></root>");
 
     const auto index = DatFrameIndexer().index_file(dat_path);
-    require(index.summary.recording_metadata.confidence == RecordingMetadataConfidence::Medium, "mismatched sidecar should leave DAT confidence");
-    require(index.summary.recording_metadata.sidecar.available, "mismatched sidecar should still be parsed");
-    require(index.summary.recording_metadata.source == "DAT frame ticks", "mismatched sidecar should not become combined metadata source");
+    require(index.summary.recording_metadata.confidence == RecordingMetadataConfidence::Medium, "mismatched .sef2 data should leave DAT confidence");
+    require(index.summary.recording_metadata.sidecar.available, "mismatched .sef2 data should still be parsed");
+    require(index.summary.recording_metadata.source == "DAT frame ticks", "mismatched .sef2 data should not become combined data source");
     std::filesystem::remove_all(dir);
 }
 
@@ -411,9 +411,9 @@ void sef2_only_metadata_is_medium_confidence() {
         "<end>2026-05-20T04:30:14.7380000</end></root>");
 
     const auto index = DatFrameIndexer().index_file(dat_path);
-    require(index.summary.recording_metadata.confidence == RecordingMetadataConfidence::Medium, "sidecar-only confidence should be medium");
-    require(index.summary.recording_metadata.sidecar.available, "sidecar should be available");
-    require(!index.summary.using_recording_ticks_for_timing, "sidecar should not alter legacy playback timing");
+    require(index.summary.recording_metadata.confidence == RecordingMetadataConfidence::Medium, ".sef2-only confidence should be medium");
+    require(index.summary.recording_metadata.sidecar.available, ".sef2 data should be available");
+    require(!index.summary.using_recording_ticks_for_timing, ".sef2 data should not alter legacy playback timing");
     std::filesystem::remove_all(dir);
 }
 

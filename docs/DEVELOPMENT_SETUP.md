@@ -10,8 +10,7 @@ cd DAT_Player
 ```
 
 The repository does not contain sample DAT/video files, build outputs, or
-portable release artifacts. A compatible sample DAT is useful for manual smoke
-testing, but it is not needed for normal build and automated tests.
+portable release files. A compatible sample DAT is useful for manual testing, but it is not needed for normal build and automated tests.
 
 ## Install Prerequisites
 
@@ -48,7 +47,7 @@ The user-facing app is:
 build\Release\DatPlayer.exe
 ```
 
-Developer smoke tools are also built under `build\Release`, but they are not
+Developer test tools are also built under `build\Release`, but they are not
 included in the end-user package.
 
 ## Build With Visual Studio Bundled CMake
@@ -78,20 +77,20 @@ If Python is unavailable, the native CTest suite is still the primary C++ test
 path. If a C++ compiler is unavailable, the Python parity verifier can still run
 the synthetic parser edge cases.
 
-## Optional Sample Smoke Tests
+## Optional Sample Decode Tests
 
 Use any compatible local DAT sample from a supported recording export. This example path is
 local to one development machine and is not required by the repository:
 
 ```powershell
 $sample = "W:\Projects\Camera 205 Sample\Camera 205 Sample\dvrfile00000001.dat"
-.\build\Release\dat_decode_smoke_test.exe $sample
-.\build\Release\dat_decode_smoke_test.exe $sample --render
-.\build\Release\dat_decode_smoke_test.exe $sample --playback-smoke 180
-.\build\Release\dat_decode_smoke_test.exe $sample --seek-smoke 2229
+.\build\Release\dat_decode_test.exe $sample
+.\build\Release\dat_decode_test.exe $sample --render
+.\build\Release\dat_decode_test.exe $sample --playback-test 180
+.\build\Release\dat_decode_test.exe $sample --seek-test 2229
 ```
 
-DAT Player and the smoke tools open DAT files read-only.
+DAT Player and the test tools open DAT files read-only.
 
 ## Package
 
@@ -108,7 +107,7 @@ dist\DatPlayer-portable.zip
 ```
 
 The release folder is intended for end users. It should not contain sample media,
-build artifacts, DAT Converter project files, test executables, or local tool
+build files, DAT Converter project files, test executables, or local tool
 folders.
 
 ## Git Hygiene

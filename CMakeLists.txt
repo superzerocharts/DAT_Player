@@ -110,16 +110,16 @@ if(WIN32)
     dat_player_set_warnings(dat_player)
     dat_player_optimize_release_size(dat_player)
 
-    add_executable(dat_decode_smoke_test
-        src/playback/DecodeSmokeTest.cpp)
+    add_executable(dat_decode_test
+        src/playback/DecodeTest.cpp)
 
-    target_link_libraries(dat_decode_smoke_test
+    target_link_libraries(dat_decode_test
         PRIVATE
             dat_indexer
             dat_playback)
 
-    dat_player_set_warnings(dat_decode_smoke_test)
-    dat_player_optimize_release_size(dat_decode_smoke_test)
+    dat_player_set_warnings(dat_decode_test)
+    dat_player_optimize_release_size(dat_decode_test)
 endif()
 
 enable_testing()
