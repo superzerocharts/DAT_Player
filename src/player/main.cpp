@@ -580,9 +580,13 @@ bool recording_ticks_for_frame(std::uint64_t frame, std::uint64_t& ticks) {
 }
 
 bool display_parts_for_recording_ticks(std::uint64_t ticks, dat_player::RecordingDateTimeParts& parts) {
-    const auto& sidecar = g_state.index.summary.recording_metadata.sidecar;
+    const auto& metadata = g_state.index.summary.recording_metadata;
+    const auto& sidecar = metadata.sidecar;
     std::uint64_t display_ticks = ticks;
-    if (sidecar.has_display_offset_minutes &&
+    const bool trust_sidecar_offset =
+        sidecar.available &&
+        (!metadata.has_dat_frame_ticks || metadata.confidence == dat_player::RecordingMetadataConfidence::High);
+    if (trust_sidecar_offset && sidecar.has_display_offset_minutes &&
         !dat_player::offset_dotnet_ticks(ticks, sidecar.display_offset_minutes, display_ticks)) {
         return false;
     }
@@ -639,16 +643,17 @@ std::wstring format_recording_datetime(std::uint64_t ticks) {
 }
 
 std::wstring metadata_source_label(const dat_player::RecordingMetadata& metadata) {
-    if (metadata.has_dat_frame_ticks && metadata.sidecar.available) {
+    if (metadata.source == "DAT frame ticks + .sef2 sidecar") {
         return L"SEF2 + DAT";
     }
-    if (metadata.has_dat_frame_ticks) {
+    if (metadata.source == "DAT frame ticks") {
         return L"DAT only";
     }
-    if (metadata.sidecar.available) {
+    if (metadata.source == ".sef2 sidecar") {
         return L"SEF2 only";
     }
-    if (metadata.confidence == dat_player::RecordingMetadataConfidence::Low) {
+    if (metadata.source == "legacy DAT timing" ||
+        metadata.confidence == dat_player::RecordingMetadataConfidence::Low) {
         return L"fallback elapsed only";
     }
     return L"none";

@@ -376,6 +376,27 @@ void dat_ticks_matching_sef2_are_high_confidence() {
     std::filesystem::remove_all(dir);
 }
 
+void mismatched_sef2_keeps_dat_metadata_source() {
+    constexpr std::uint64_t start_ticks = 639148479165410000ULL;
+    constexpr std::uint64_t end_ticks = 639148482147380000ULL;
+    const auto dir = unique_temp_dir();
+    const auto dat_path = dir / "clip.dat";
+    const auto sef2_path = dir / "clip.sef2";
+    std::vector<unsigned char> data;
+    append_record_with_dotnet_ticks(data, "H264", start_ticks, 1280, 720, 1);
+    append_record_with_dotnet_ticks(data, "I264", end_ticks, 1280, 720, 1);
+    write_binary_file(dat_path, data);
+    write_text_file(sef2_path,
+        "<root><start>2026-05-21T04:25:16.5410000</start>"
+        "<end>2026-05-21T04:30:14.7380000</end></root>");
+
+    const auto index = DatFrameIndexer().index_file(dat_path);
+    require(index.summary.recording_metadata.confidence == RecordingMetadataConfidence::Medium, "mismatched sidecar should leave DAT confidence");
+    require(index.summary.recording_metadata.sidecar.available, "mismatched sidecar should still be parsed");
+    require(index.summary.recording_metadata.source == "DAT frame ticks", "mismatched sidecar should not become combined metadata source");
+    std::filesystem::remove_all(dir);
+}
+
 void sef2_only_metadata_is_medium_confidence() {
     const auto dir = unique_temp_dir();
     const auto dat_path = dir / "clip.dat";
@@ -439,6 +460,7 @@ int main() {
     failures += run_test("marker_minus_16_legacy_timing_remains_fallback", marker_minus_16_legacy_timing_remains_fallback);
     failures += run_test("sef2_parser_extracts_recording_metadata", sef2_parser_extracts_recording_metadata);
     failures += run_test("dat_ticks_matching_sef2_are_high_confidence", dat_ticks_matching_sef2_are_high_confidence);
+    failures += run_test("mismatched_sef2_keeps_dat_metadata_source", mismatched_sef2_keeps_dat_metadata_source);
     failures += run_test("sef2_only_metadata_is_medium_confidence", sef2_only_metadata_is_medium_confidence);
     failures += run_test("final_buffer_boundary_is_scanned", final_buffer_boundary_is_scanned);
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
