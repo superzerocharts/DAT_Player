@@ -199,6 +199,9 @@ struct PlayerState {
     bool playing = false;
     bool details_visible = false;
     bool actual_size_applied = false;
+    bool force_native_video_size = false;
+    int requested_video_width = 0;
+    int requested_video_height = 0;
     bool live_resizing = false;
 };
 
@@ -1749,6 +1752,9 @@ void reset_loaded_state() {
     g_state.resume_after_timeline_drag = false;
     g_state.pending_seek_resume_after_completion = false;
     g_state.pending_seek_resume_generation = 0;
+    g_state.force_native_video_size = false;
+    g_state.requested_video_width = 0;
+    g_state.requested_video_height = 0;
     g_state.has_timeline_preview = false;
     g_state.timeline_preview_frame = 0;
     g_state.has_pending_seek = false;
@@ -2649,7 +2655,11 @@ bool resize_to_actual_size() {
     if (IsZoomed(g_state.hwnd)) {
         ShowWindow(g_state.hwnd, SW_RESTORE);
     }
+    g_state.force_native_video_size = true;
+    g_state.requested_video_width = source_width;
+    g_state.requested_video_height = source_height;
     SetWindowPos(g_state.hwnd, nullptr, x, y, desired_width, desired_height, SWP_NOZORDER | SWP_NOACTIVATE);
+    layout_controls(g_state.hwnd);
 
     if (extends_beyond_screen) {
         set_status(g_state.details_visible
@@ -2683,6 +2693,9 @@ bool resize_to_default_size() {
     if (IsZoomed(g_state.hwnd)) {
         ShowWindow(g_state.hwnd, SW_RESTORE);
     }
+    g_state.force_native_video_size = false;
+    g_state.requested_video_width = 0;
+    g_state.requested_video_height = 0;
     SetWindowPos(g_state.hwnd, nullptr, x, y, desired_width, desired_height, SWP_NOZORDER | SWP_NOACTIVATE);
     set_status(L"Default Size applied.");
     return true;
@@ -2729,22 +2742,34 @@ void layout_controls(HWND hwnd) {
     const int content_top = file_top + file_row_height + 8;
     const int status_top = rect.bottom - status_height - 6;
     const int content_bottom = status_top - 10;
+    const bool force_native_video =
+        g_state.force_native_video_size &&
+        g_state.requested_video_width > 0 &&
+        g_state.requested_video_height > 0;
     int details_width = 0;
     if (g_state.details_visible) {
-        details_width = details_panel_width_for_client_width(width);
-        const int max_details_width = width - padding * 3 - 1;
-        if (max_details_width < details_width) {
-            details_width = std::max(1, max_details_width);
+        if (force_native_video) {
+            details_width = 370;
+        } else {
+            details_width = details_panel_width_for_client_width(width);
+            const int max_details_width = width - padding * 3 - 1;
+            if (max_details_width < details_width) {
+                details_width = std::max(1, max_details_width);
+            }
         }
     }
     const int controls_min_width = minimum_video_width_for_controls();
     const int available_video_width = width - padding * 2 - (g_state.details_visible ? padding + details_width : 0);
-    const int video_width = g_state.details_visible
-        ? std::max(1, available_video_width)
-        : std::max(controls_min_width, available_video_width);
+    const int video_width = force_native_video
+        ? g_state.requested_video_width
+        : (g_state.details_visible
+            ? std::max(1, available_video_width)
+            : std::max(controls_min_width, available_video_width));
     const int content_height = std::max(220, content_bottom - content_top);
     const int controls_height = button_height + 8;
-    const int video_height = std::max(120, content_height - timeline_height - controls_height - 16);
+    const int video_height = force_native_video
+        ? g_state.requested_video_height
+        : std::max(120, content_height - timeline_height - controls_height - 16);
     const int timeline_top = content_top + video_height + 8;
     const int controls_top = timeline_top + timeline_height + 2;
     const int details_left = padding + video_width + padding;
@@ -2891,6 +2916,9 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
 
     case WM_ENTERSIZEMOVE:
         g_state.live_resizing = true;
+        g_state.force_native_video_size = false;
+        g_state.requested_video_width = 0;
+        g_state.requested_video_height = 0;
         return 0;
 
     case WM_EXITSIZEMOVE:
@@ -2905,6 +2933,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         const SIZE min_window = window_size_for_client_size(hwnd, minimum_client_width(), minimum_client_height());
         minmax->ptMinTrackSize.x = min_window.cx;
         minmax->ptMinTrackSize.y = min_window.cy;
+        minmax->ptMaxTrackSize.x = 32767;
+        minmax->ptMaxTrackSize.y = 32767;
         return 0;
     }
 
