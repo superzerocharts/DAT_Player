@@ -176,6 +176,7 @@ struct PlayerState {
     RECT thumb_time_label_rect = {};
     bool has_thumb_time_label_rect = false;
     std::wstring displayed_thumb_time_text;
+    int integrity_dot_state = -1;
     std::uint64_t current_frame = 0;
     bool timeline_dragging = false;
     bool resume_after_timeline_drag = false;
@@ -816,10 +817,24 @@ void update_details_toggle_button() {
     }
 }
 
-void update_integrity_dot() {
-    if (g_state.integrity_dot) {
-        InvalidateRect(g_state.integrity_dot, nullptr, TRUE);
+int current_integrity_dot_state() {
+    if (g_state.loaded_path.empty()) {
+        return 0;
     }
+    return g_state.index.summary.recording_metadata.sidecar.available ? 1 : 2;
+}
+
+void update_integrity_dot(bool force = false) {
+    if (!g_state.integrity_dot) {
+        return;
+    }
+
+    const int state = current_integrity_dot_state();
+    if (!force && state == g_state.integrity_dot_state) {
+        return;
+    }
+    g_state.integrity_dot_state = state;
+    InvalidateRect(g_state.integrity_dot, nullptr, TRUE);
 }
 
 void order_details_controls() {
@@ -1270,12 +1285,11 @@ LRESULT CALLBACK brand_header_proc(HWND hwnd, UINT message, WPARAM wparam, LPARA
 }
 
 COLORREF integrity_dot_color() {
-    if (g_state.loaded_path.empty()) {
+    const int state = current_integrity_dot_state();
+    if (state == 0) {
         return RGB(150, 150, 150);
     }
-    return g_state.index.summary.recording_metadata.sidecar.available
-        ? RGB(45, 150, 72)
-        : RGB(190, 55, 55);
+    return state == 1 ? RGB(45, 150, 72) : RGB(190, 55, 55);
 }
 
 LRESULT CALLBACK integrity_dot_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -2624,23 +2638,25 @@ bool resize_to_actual_size() {
     const int work_width = work.right - work.left;
     const int work_height = work.bottom - work.top;
 
-    const bool clamped = desired_width > work_width || desired_height > work_height;
-    desired_width = std::min(desired_width, work_width);
-    desired_height = std::min(desired_height, work_height);
-    const int x = work.left + std::max(0, (work_width - desired_width) / 2);
-    const int y = work.top + std::max(0, (work_height - desired_height) / 2);
+    const bool extends_beyond_screen = desired_width > work_width || desired_height > work_height;
+    const int x = extends_beyond_screen
+        ? static_cast<int>(work.left)
+        : work.left + std::max(0, (work_width - desired_width) / 2);
+    const int y = extends_beyond_screen
+        ? static_cast<int>(work.top)
+        : work.top + std::max(0, (work_height - desired_height) / 2);
 
     if (IsZoomed(g_state.hwnd)) {
         ShowWindow(g_state.hwnd, SW_RESTORE);
     }
     SetWindowPos(g_state.hwnd, nullptr, x, y, desired_width, desired_height, SWP_NOZORDER | SWP_NOACTIVATE);
 
-    if (clamped) {
-        set_status(L"Screen is too small for full video size; window was fit to available space.");
+    if (extends_beyond_screen) {
+        set_status(g_state.details_visible
+            ? L"Video set to actual size; window may extend beyond the screen."
+            : L"Video set to actual size.");
     } else {
-        std::wostringstream status;
-        status << L"Actual Size applied: video panel target " << source_width << L" x " << source_height << L".";
-        set_status(status.str());
+        set_status(L"Video set to actual size.");
     }
     return true;
 }
@@ -2774,6 +2790,7 @@ void layout_controls(HWND hwnd) {
     ShowWindow(g_state.render_first_frame_button, g_state.details_visible ? SW_SHOW : SW_HIDE);
     order_details_controls();
     ShowWindow(g_state.integrity_dot, SW_SHOW);
+    update_integrity_dot(true);
     update_actual_size_button();
     update_details_toggle_button();
     update_speed_button();
