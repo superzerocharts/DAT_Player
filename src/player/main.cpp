@@ -48,6 +48,7 @@ constexpr int kTotalTimeLabelId = 1014;
 constexpr int kDetailsToggleButtonId = 1015;
 constexpr int kSpeedButtonId = 1016;
 constexpr int kThumbTimeLabelId = 1017;
+constexpr int kIntegrityDotId = 1018;
 constexpr UINT kPlaybackFrameMessage = WM_APP + 1;
 constexpr UINT kPlaybackFinishedMessage = WM_APP + 2;
 constexpr UINT kSeekFinishedMessage = WM_APP + 3;
@@ -57,7 +58,7 @@ constexpr UINT kIntegrityFinishedMessage = WM_APP + 6;
 constexpr UINT_PTR kTimelinePreviewTimerId = 42;
 constexpr UINT_PTR kResizeRefreshTimerId = 43;
 constexpr int kTrackbarMax = 10000;
-constexpr int kDefaultWindowWidth = 689;
+constexpr int kDefaultWindowWidth = 646;
 constexpr int kDefaultWindowHeight = 584;
 constexpr auto kPreviewThrottle = std::chrono::milliseconds(200);
 constexpr auto kDiagnosticsUpdateThrottle = std::chrono::milliseconds(500);
@@ -125,6 +126,7 @@ struct PlayerState {
     HWND brand_header = nullptr;
     HWND file_label = nullptr;
     HWND file_path_edit = nullptr;
+    HWND integrity_dot = nullptr;
     HWND details_group = nullptr;
     HWND current_time_label = nullptr;
     HWND total_time_label = nullptr;
@@ -791,6 +793,12 @@ void update_details_toggle_button() {
     }
 }
 
+void update_integrity_dot() {
+    if (g_state.integrity_dot) {
+        InvalidateRect(g_state.integrity_dot, nullptr, TRUE);
+    }
+}
+
 void update_speed_button() {
     if (g_state.speed_button) {
         const auto text = next_speed_button_text();
@@ -841,6 +849,28 @@ void start_integrity_verification_if_needed() {
 }
 
 void refresh_after_resize() {
+    if (g_state.details_visible) {
+        RedrawWindow(
+            g_state.details_group,
+            nullptr,
+            nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
+        RedrawWindow(
+            g_state.info_label,
+            nullptr,
+            nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
+        RedrawWindow(
+            g_state.decode_test_button,
+            nullptr,
+            nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
+        RedrawWindow(
+            g_state.render_first_frame_button,
+            nullptr,
+            nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
+    }
     if (g_state.video_panel) {
         RedrawWindow(
             g_state.video_panel,
@@ -1203,6 +1233,50 @@ LRESULT CALLBACK brand_header_proc(HWND hwnd, UINT message, WPARAM wparam, LPARA
     }
 }
 
+COLORREF integrity_dot_color() {
+    if (g_state.loaded_path.empty()) {
+        return RGB(150, 150, 150);
+    }
+    return g_state.index.summary.recording_metadata.sidecar.available
+        ? RGB(45, 150, 72)
+        : RGB(190, 55, 55);
+}
+
+LRESULT CALLBACK integrity_dot_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    switch (message) {
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_PAINT: {
+        PAINTSTRUCT ps = {};
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rect = {};
+        GetClientRect(hwnd, &rect);
+
+        FillRect(hdc, &rect, g_state.window_background_brush);
+        const int dot_width = static_cast<int>(rect.right - rect.left);
+        const int dot_height = static_cast<int>(rect.bottom - rect.top);
+        const int diameter = std::max(6, std::min(dot_width, dot_height) - 4);
+        const int left = (rect.right - rect.left - diameter) / 2;
+        const int top = (rect.bottom - rect.top - diameter) / 2;
+        HBRUSH dot_brush = CreateSolidBrush(integrity_dot_color());
+        HBRUSH old_brush = static_cast<HBRUSH>(SelectObject(hdc, dot_brush));
+        HPEN border_pen = CreatePen(PS_SOLID, 1, RGB(110, 110, 110));
+        HPEN old_pen = static_cast<HPEN>(SelectObject(hdc, border_pen));
+        Ellipse(hdc, left, top, left + diameter, top + diameter);
+        SelectObject(hdc, old_pen);
+        SelectObject(hdc, old_brush);
+        DeleteObject(border_pen);
+        DeleteObject(dot_brush);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+
+    default:
+        return DefWindowProcW(hwnd, message, wparam, lparam);
+    }
+}
+
 LRESULT CALLBACK video_panel_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
     case WM_ERASEBKGND:
@@ -1436,6 +1510,7 @@ std::wstring build_info_text() {
 
 void update_info(bool force) {
     update_file_path_text();
+    update_integrity_dot();
     update_timeline();
     if (!g_state.info_label || !g_state.details_visible) {
         return;
@@ -2485,6 +2560,8 @@ void layout_controls(HWND hwnd) {
     const int trackbar_height = 28;
     const int status_height = 24;
     const int time_label_width = 92;
+    const int integrity_dot_size = 16;
+    const int integrity_dot_gap = 6;
     const int file_top = header_height + 12;
     const int content_top = file_top + file_row_height + 8;
     const int status_top = rect.bottom - status_height - 6;
@@ -2508,7 +2585,15 @@ void layout_controls(HWND hwnd) {
     ShowWindow(g_state.brand_header, SW_HIDE);
     MoveWindow(g_state.file_label, 0, 0, 0, 0, TRUE);
     ShowWindow(g_state.file_label, SW_HIDE);
-    MoveWindow(g_state.file_path_edit, padding, file_top, video_width, file_row_height, TRUE);
+    const int file_text_width = std::max(80, video_width - integrity_dot_size - integrity_dot_gap);
+    MoveWindow(g_state.file_path_edit, padding, file_top, file_text_width, file_row_height, TRUE);
+    MoveWindow(
+        g_state.integrity_dot,
+        padding + video_width - integrity_dot_size,
+        file_top + std::max(0, (file_row_height - integrity_dot_size) / 2),
+        integrity_dot_size,
+        integrity_dot_size,
+        TRUE);
     MoveWindow(g_state.video_panel, padding, content_top, video_width, video_height, TRUE);
     MoveWindow(g_state.current_time_label, padding, timeline_top + 2, time_label_width, 38, TRUE);
     MoveWindow(g_state.timeline, padding + time_label_width + 6, timeline_top, video_width - time_label_width * 2 - 12, trackbar_height, TRUE);
@@ -2537,6 +2622,7 @@ void layout_controls(HWND hwnd) {
     ShowWindow(g_state.info_label, g_state.details_visible ? SW_SHOW : SW_HIDE);
     ShowWindow(g_state.decode_test_button, g_state.details_visible ? SW_SHOW : SW_HIDE);
     ShowWindow(g_state.render_first_frame_button, g_state.details_visible ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_state.integrity_dot, SW_SHOW);
     update_actual_size_button();
     update_details_toggle_button();
     update_speed_button();
@@ -2573,6 +2659,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         g_state.file_path_edit = CreateWindowW(L"STATIC", L"No DAT file loaded",
             WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFilePathId)), nullptr, nullptr);
+        g_state.integrity_dot = CreateWindowW(L"DATIntegrityDot", L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIntegrityDotId)), nullptr, nullptr);
         g_state.open_button = CreateWindowW(L"BUTTON", L"Open .dat", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpenButtonId)), nullptr, nullptr);
         g_state.play_button = CreateWindowW(L"BUTTON", L"Play", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
@@ -2583,11 +2671,11 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kActualSizeButtonId)), nullptr, nullptr);
         g_state.details_toggle_button = CreateWindowW(L"BUTTON", L"Show Details", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDetailsToggleButtonId)), nullptr, nullptr);
-        g_state.details_group = CreateWindowW(L"BUTTON", L"Details / Diagnostics", WS_CHILD | BS_GROUPBOX,
+        g_state.details_group = CreateWindowW(L"BUTTON", L"Details / Diagnostics", WS_CHILD | WS_CLIPSIBLINGS | BS_GROUPBOX,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDetailsGroupId)), nullptr, nullptr);
-        g_state.decode_test_button = CreateWindowW(L"BUTTON", L"Decode Test", WS_CHILD | WS_DISABLED | BS_PUSHBUTTON,
+        g_state.decode_test_button = CreateWindowW(L"BUTTON", L"Decode Test", WS_CHILD | WS_CLIPSIBLINGS | WS_DISABLED | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDecodeButtonId)), nullptr, nullptr);
-        g_state.render_first_frame_button = CreateWindowW(L"BUTTON", L"Render Frame", WS_CHILD | WS_DISABLED | BS_PUSHBUTTON,
+        g_state.render_first_frame_button = CreateWindowW(L"BUTTON", L"Render Frame", WS_CHILD | WS_CLIPSIBLINGS | WS_DISABLED | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRenderFirstFrameButtonId)), nullptr, nullptr);
         g_state.timeline = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | WS_DISABLED | TBS_NOTICKS,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTimelineId)), nullptr, nullptr);
@@ -2602,7 +2690,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         DragAcceptFiles(hwnd, TRUE);
         DragAcceptFiles(g_state.video_panel, TRUE);
         g_state.info_label = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-            WS_CHILD | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
+            WS_CHILD | WS_CLIPSIBLINGS | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kInfoLabelId)), nullptr, nullptr);
         g_state.status_label = CreateWindowW(L"STATIC", L"Ready. Open a compatible .dat file to begin.", WS_CHILD | WS_VISIBLE | SS_LEFT,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabelId)), nullptr, nullptr);
@@ -2610,6 +2698,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         apply_default_font(g_state.brand_header);
         apply_default_font(g_state.file_label);
         apply_default_font(g_state.file_path_edit);
+        apply_default_font(g_state.integrity_dot);
         apply_default_font(g_state.open_button);
         apply_default_font(g_state.play_button);
         apply_default_font(g_state.speed_button);
@@ -2647,6 +2736,12 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         layout_controls(hwnd);
         if (g_state.video_panel) {
             InvalidateRect(g_state.video_panel, nullptr, FALSE);
+        }
+        if (g_state.details_visible) {
+            RedrawWindow(g_state.details_group, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
+            RedrawWindow(g_state.info_label, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
+            RedrawWindow(g_state.decode_test_button, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
+            RedrawWindow(g_state.render_first_frame_button, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
         }
         arm_resize_refresh();
         return 0;
@@ -3062,6 +3157,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     if (!RegisterClassExW(&header_class)) {
         MessageBoxW(nullptr, L"Unable to register DAT Player header.", L"DAT Player", MB_OK | MB_ICONERROR);
+        Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
+        return 1;
+    }
+
+    WNDCLASSEXW integrity_dot_class = {};
+    integrity_dot_class.cbSize = sizeof(integrity_dot_class);
+    integrity_dot_class.style = CS_HREDRAW | CS_VREDRAW;
+    integrity_dot_class.lpfnWndProc = integrity_dot_proc;
+    integrity_dot_class.hInstance = instance;
+    integrity_dot_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    integrity_dot_class.hbrBackground = g_state.window_background_brush;
+    integrity_dot_class.lpszClassName = L"DATIntegrityDot";
+
+    if (!RegisterClassExW(&integrity_dot_class)) {
+        MessageBoxW(nullptr, L"Unable to register DAT Player status indicator.", L"DAT Player", MB_OK | MB_ICONERROR);
         Gdiplus::GdiplusShutdown(g_state.gdiplus_token);
         return 1;
     }
