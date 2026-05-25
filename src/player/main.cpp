@@ -55,7 +55,7 @@ constexpr UINT kPreviewFinishedMessage = WM_APP + 5;
 constexpr UINT_PTR kTimelinePreviewTimerId = 42;
 constexpr int kTrackbarMax = 10000;
 constexpr auto kPreviewThrottle = std::chrono::milliseconds(200);
-constexpr auto kDiagnosticsUpdateThrottle = std::chrono::milliseconds(250);
+constexpr auto kDiagnosticsUpdateThrottle = std::chrono::milliseconds(500);
 
 struct UiPlaybackFrame {
     dat_player::playback::BgraVideoFrame frame;
@@ -1317,7 +1317,11 @@ void update_info(bool force = false) {
         SendMessageW(g_state.info_label, EM_LINESCROLL, 0, first_visible_line - restored_first_line);
     }
     SendMessageW(g_state.info_label, WM_SETREDRAW, TRUE, 0);
-    InvalidateRect(g_state.info_label, nullptr, TRUE);
+    RedrawWindow(
+        g_state.info_label,
+        nullptr,
+        nullptr,
+        RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
     g_state.displayed_info_text = info;
 }
 
@@ -2437,6 +2441,11 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
     case WM_CTLCOLORSTATIC: {
         HDC hdc = reinterpret_cast<HDC>(wparam);
         SetTextColor(hdc, RGB(35, 43, 51));
+        if (reinterpret_cast<HWND>(lparam) == g_state.info_label) {
+            SetBkMode(hdc, OPAQUE);
+            SetBkColor(hdc, RGB(255, 255, 255));
+            return reinterpret_cast<LRESULT>(GetStockObject(WHITE_BRUSH));
+        }
         if (reinterpret_cast<HWND>(lparam) == g_state.thumb_time_label) {
             SetBkMode(hdc, OPAQUE);
             SetBkColor(hdc, RGB(240, 240, 240));
