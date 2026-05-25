@@ -43,6 +43,8 @@ constexpr int kFileLabelId = 1011;
 constexpr int kDetailsGroupId = 1012;
 constexpr int kCurrentTimeLabelId = 1013;
 constexpr int kTotalTimeLabelId = 1014;
+constexpr int kDetailsToggleButtonId = 1015;
+constexpr int kSpeedButtonId = 1016;
 constexpr UINT kPlaybackFrameMessage = WM_APP + 1;
 constexpr UINT kPlaybackFinishedMessage = WM_APP + 2;
 constexpr UINT kSeekFinishedMessage = WM_APP + 3;
@@ -97,6 +99,8 @@ struct PlayerState {
     HWND open_button = nullptr;
     HWND play_button = nullptr;
     HWND actual_size_button = nullptr;
+    HWND details_toggle_button = nullptr;
+    HWND speed_button = nullptr;
     HWND decode_smoke_button = nullptr;
     HWND render_first_frame_button = nullptr;
     HWND timeline = nullptr;
@@ -121,6 +125,7 @@ struct PlayerState {
     std::thread preview_thread;
     std::atomic_bool stop_playback_requested = false;
     std::atomic_bool stop_preview_requested = false;
+    std::atomic<int> playback_speed_index = 0;
     std::atomic<std::uint64_t> playback_generation = 0;
     std::atomic<std::uint64_t> preview_generation = 0;
     std::uint64_t frames_rendered = 0;
@@ -158,12 +163,14 @@ struct PlayerState {
     std::chrono::steady_clock::time_point last_preview_started{};
     bool seeking = false;
     bool playing = false;
+    bool details_visible = false;
 };
 
 PlayerState g_state;
 
 void start_forward_playback();
 void handle_drop_files(HWND hwnd, HDROP drop);
+void layout_controls(HWND hwnd);
 
 std::wstring widen(const std::string& value) {
     if (value.empty()) {
@@ -256,6 +263,53 @@ double playback_fps() {
         return g_state.index.summary.estimated_fps;
     }
     return 30.0;
+}
+
+double playback_speed_multiplier_from_index(int index) {
+    switch (std::clamp(index, 0, 3)) {
+    case 1:
+        return 2.0;
+    case 2:
+        return 4.0;
+    case 3:
+        return 8.0;
+    default:
+        return 1.0;
+    }
+}
+
+double playback_speed_multiplier() {
+    return playback_speed_multiplier_from_index(g_state.playback_speed_index.load());
+}
+
+std::wstring playback_speed_label(double speed) {
+    if (speed >= 7.5) {
+        return L"8x";
+    }
+    if (speed >= 3.5) {
+        return L"4x";
+    }
+    if (speed >= 1.5) {
+        return L"2x";
+    }
+    return L"1x";
+}
+
+std::wstring playback_speed_label() {
+    return playback_speed_label(playback_speed_multiplier());
+}
+
+std::wstring next_speed_button_text() {
+    switch (std::clamp(g_state.playback_speed_index.load(), 0, 3)) {
+    case 0:
+        return L"x2";
+    case 1:
+        return L"x4";
+    case 2:
+        return L"x8";
+    default:
+        return L"Normal";
+    }
 }
 
 double seconds_for_frame(std::uint64_t frame) {
@@ -386,6 +440,19 @@ void update_play_button() {
             (g_state.timeline_dragging && g_state.resume_after_timeline_drag) ||
             (g_state.seeking && g_state.pending_seek_resume_after_completion);
         SetWindowTextW(g_state.play_button, (g_state.playing || pause_would_cancel_scrub_resume) ? L"Pause" : L"Play");
+    }
+}
+
+void update_details_toggle_button() {
+    if (g_state.details_toggle_button) {
+        SetWindowTextW(g_state.details_toggle_button, g_state.details_visible ? L"Hide Details" : L"Show Details");
+    }
+}
+
+void update_speed_button() {
+    if (g_state.speed_button) {
+        const auto text = next_speed_button_text();
+        SetWindowTextW(g_state.speed_button, text.c_str());
     }
 }
 
@@ -641,16 +708,8 @@ LRESULT CALLBACK brand_header_proc(HWND hwnd, UINT message, WPARAM wparam, LPARA
 
         Gdiplus::FontFamily font_family(L"Segoe UI");
         Gdiplus::Font title_font(&font_family, 22.0f, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-        Gdiplus::Font subtitle_font(&font_family, 12.0f, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
         Gdiplus::SolidBrush title_brush(Gdiplus::Color(255, 35, 43, 51));
-        Gdiplus::SolidBrush subtitle_brush(Gdiplus::Color(255, 88, 96, 104));
-        graphics.DrawString(L"DAT Player", -1, &title_font, Gdiplus::PointF(76.0f, 12.0f), &title_brush);
-        graphics.DrawString(
-            L"Lightweight companion utility for compatible Mirasys/Spotter DAT files",
-            -1,
-            &subtitle_font,
-            Gdiplus::PointF(78.0f, 40.0f),
-            &subtitle_brush);
+        graphics.DrawString(L"DAT Player", -1, &title_font, Gdiplus::PointF(76.0f, 19.0f), &title_brush);
 
         Gdiplus::Pen divider(Gdiplus::Color(255, 210, 210, 210), 1.0f);
         graphics.DrawLine(&divider, 0, rect.bottom - 1, rect.right, rect.bottom - 1);
@@ -756,6 +815,7 @@ std::wstring build_info_text() {
          << L"First resolution: " << first.width << L" x " << first.height << L"\r\n"
          << L"Estimated duration: " << format_double(g_state.index.summary.duration_seconds, 2) << L" sec\r\n"
          << L"Estimated FPS: " << format_double(g_state.index.summary.estimated_fps, 2) << L"\r\n"
+         << L"Speed: " << playback_speed_label() << L"\r\n"
          << L"Keyframes: " << keys << L"\r\n"
          << L"Interframes: " << interframes << L"\r\n"
          << L"Timeline frame: " << (g_state.current_frame + 1) << L" / " << total;
@@ -1075,7 +1135,8 @@ std::wstring format_playback_diagnostics(const std::wstring& state) {
          << L"Frames decoded: " << g_state.frames_decoded << L"\r\n"
          << L"Frames rendered: " << g_state.frames_rendered << L"\r\n"
          << L"Late frames: " << g_state.late_frames << L"\r\n"
-         << L"Target FPS: " << format_double(playback_fps(), 2) << L"\r\n"
+         << L"Speed: " << playback_speed_label() << L"\r\n"
+         << L"Target FPS: " << format_double(playback_fps() * playback_speed_multiplier(), 2) << L"\r\n"
          << L"Actual FPS: " << format_double(g_state.effective_playback_fps, 2) << L"\r\n"
          << L"Worker interval: " << format_double(g_state.frame_interval_ms, 2) << L" ms\r\n"
          << L"UI interval avg/max: " << format_double(g_state.recent_frame_interval_ms, 2)
@@ -1302,7 +1363,7 @@ void start_forward_playback() {
     g_state.frames_decoded = 0;
     g_state.late_frames = 0;
     g_state.effective_playback_fps = 0.0;
-    g_state.frame_interval_ms = 1000.0 / playback_fps();
+    g_state.frame_interval_ms = 1000.0 / (playback_fps() * playback_speed_multiplier());
     g_state.recent_frame_interval_ms = 0.0;
     g_state.max_recent_frame_interval_ms = 0.0;
     g_state.average_ui_delay_ms = 0.0;
@@ -1317,7 +1378,7 @@ void start_forward_playback() {
     const std::uint64_t generation = ++g_state.playback_generation;
     g_state.playing = true;
     update_play_button();
-    set_status(L"Starting forward playback...");
+    set_status(L"Starting forward playback at Speed: " + playback_speed_label() + L".");
     g_state.decode_smoke_text = format_playback_diagnostics(L"starting");
     update_info();
 
@@ -1336,7 +1397,7 @@ void start_forward_playback() {
 
         auto playback_started = std::chrono::steady_clock::now();
         auto last_post_time = playback_started;
-        bool clock_started = false;
+        bool first_frame = true;
         std::uint64_t rendered_callbacks = 0;
         std::uint64_t late_frames = 0;
 
@@ -1345,19 +1406,22 @@ void start_forward_playback() {
                 return false;
             }
 
-            const double media_seconds = stable_playback_seconds_from_start(start_frame, frame.frame_index, fallback_fps);
-            const auto media_offset = std::chrono::microseconds(
-                static_cast<long long>(std::max(0.0, media_seconds) * 1000000.0));
-            if (!clock_started) {
-                playback_started = std::chrono::steady_clock::now() - media_offset;
-                last_post_time = std::chrono::steady_clock::now();
-                clock_started = true;
-            }
-            const auto due_time = playback_started + media_offset;
-            while (!g_state.stop_playback_requested &&
-                   g_state.playback_generation.load() == generation &&
-                   std::chrono::steady_clock::now() + std::chrono::milliseconds(1) < due_time) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            const double speed = playback_speed_multiplier_from_index(g_state.playback_speed_index.load());
+            const double target_interval_ms = fallback_interval_ms / std::max(1.0, speed);
+            auto target_post_time = last_post_time;
+            if (first_frame) {
+                playback_started = std::chrono::steady_clock::now();
+                last_post_time = playback_started;
+                target_post_time = last_post_time;
+                first_frame = false;
+            } else {
+                target_post_time = last_post_time + std::chrono::microseconds(
+                    static_cast<long long>(std::max(1.0, target_interval_ms) * 1000.0));
+                while (!g_state.stop_playback_requested &&
+                       g_state.playback_generation.load() == generation &&
+                       std::chrono::steady_clock::now() + std::chrono::milliseconds(1) < target_post_time) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
             }
 
             if (g_state.stop_playback_requested || g_state.playback_generation.load() != generation) {
@@ -1365,11 +1429,8 @@ void start_forward_playback() {
             }
 
             const auto now = std::chrono::steady_clock::now();
-            if (now > due_time + std::chrono::milliseconds(20)) {
+            if (now > target_post_time + std::chrono::milliseconds(20)) {
                 ++late_frames;
-            }
-            if (now > due_time + std::chrono::milliseconds(80)) {
-                playback_started = now - media_offset;
             }
             ++rendered_callbacks;
             const double elapsed_seconds = std::chrono::duration<double>(now - playback_started).count();
@@ -1378,7 +1439,7 @@ void start_forward_playback() {
                 : 0.0;
             const double frame_interval_ms = rendered_callbacks > 1
                 ? std::chrono::duration<double, std::milli>(now - last_post_time).count()
-                : fallback_interval_ms;
+                : target_interval_ms;
             last_post_time = now;
 
             auto ui_frame = std::make_unique<UiPlaybackFrame>();
@@ -1456,6 +1517,31 @@ void toggle_playback() {
     }
 }
 
+void toggle_details() {
+    g_state.details_visible = !g_state.details_visible;
+    update_details_toggle_button();
+    layout_controls(g_state.hwnd);
+    if (g_state.hwnd) {
+        InvalidateRect(g_state.hwnd, nullptr, TRUE);
+    }
+    if (g_state.video_panel) {
+        InvalidateRect(g_state.video_panel, nullptr, TRUE);
+    }
+}
+
+void cycle_playback_speed() {
+    const int next_index = (std::clamp(g_state.playback_speed_index.load(), 0, 3) + 1) % 4;
+    g_state.playback_speed_index.store(next_index);
+    update_speed_button();
+    update_info();
+    std::wostringstream status;
+    status << L"Speed: " << playback_speed_label();
+    if (g_state.playing) {
+        status << L" while playing.";
+    }
+    set_status(status.str());
+}
+
 void resize_to_actual_size() {
     if (!g_state.hwnd || g_state.index.frames.empty()) {
         return;
@@ -1480,13 +1566,18 @@ void resize_to_actual_size() {
     const int content_bottom_margin = status_height + 16;
     const int controls_height = button_height + 8;
 
-    int details_width = 370;
-    int client_width = 0;
-    for (int i = 0; i < 4; ++i) {
-        client_width = source_width + padding * 3 + details_width;
-        details_width = std::clamp(client_width / 3, 320, 370);
+    int details_width = 0;
+    if (g_state.details_visible) {
+        details_width = 370;
+        int visible_client_width = 0;
+        for (int i = 0; i < 4; ++i) {
+            visible_client_width = source_width + padding * 3 + details_width;
+            details_width = std::clamp(visible_client_width / 3, 320, 370);
+        }
     }
-    client_width = source_width + padding * 3 + details_width;
+    const int controls_min_width = 104 + 8 + 70 + 16 + 112 + 8 + 112;
+    const int video_side_width = std::max(source_width, controls_min_width);
+    const int client_width = video_side_width + padding * 2 + (g_state.details_visible ? padding + details_width : 0);
     const int client_height = content_top + source_height + timeline_height + controls_height + 16 + content_bottom_margin;
 
     RECT window_rect = {0, 0, client_width, client_height};
@@ -1540,7 +1631,9 @@ void layout_controls(HWND hwnd) {
     const int file_label_width = 64;
     const int open_button_width = 110;
     const int play_button_width = 104;
+    const int speed_button_width = 70;
     const int actual_size_button_width = 112;
+    const int details_toggle_button_width = 112;
     const int smoke_button_width = 132;
     const int render_button_width = 132;
     const int button_height = 32;
@@ -1551,8 +1644,9 @@ void layout_controls(HWND hwnd) {
     const int content_top = file_top + file_row_height + 14;
     const int status_top = rect.bottom - status_height - 6;
     const int content_bottom = status_top - 10;
-    const int details_width = std::clamp(width / 3, 320, 370);
-    const int video_width = std::max(240, width - padding * 3 - details_width);
+    const int details_width = g_state.details_visible ? std::clamp(width / 3, 320, 370) : 0;
+    const int controls_min_width = play_button_width + 8 + speed_button_width + 16 + details_toggle_button_width + 8 + actual_size_button_width;
+    const int video_width = std::max(controls_min_width, width - padding * 2 - (g_state.details_visible ? padding + details_width : 0));
     const int content_height = std::max(220, content_bottom - content_top);
     const int controls_height = button_height + 8;
     const int video_height = std::max(120, content_height - timeline_height - controls_height - 16);
@@ -1574,11 +1668,21 @@ void layout_controls(HWND hwnd) {
     MoveWindow(g_state.timeline, padding + time_label_width + 6, timeline_top, video_width - time_label_width * 2 - 12, timeline_height, TRUE);
     MoveWindow(g_state.total_time_label, padding + video_width - time_label_width, timeline_top + 4, time_label_width, 20, TRUE);
     MoveWindow(g_state.play_button, padding, controls_top, play_button_width, button_height, TRUE);
-    MoveWindow(g_state.actual_size_button, padding + play_button_width + 8, controls_top, actual_size_button_width, button_height, TRUE);
-    MoveWindow(g_state.details_group, details_left, content_top, details_width, content_height, TRUE);
-    MoveWindow(g_state.info_label, details_inner_left, details_inner_top, details_inner_width, details_text_height, TRUE);
-    MoveWindow(g_state.decode_smoke_button, details_inner_left, details_buttons_top, smoke_button_width, button_height, TRUE);
-    MoveWindow(g_state.render_first_frame_button, details_inner_left + smoke_button_width + 8, details_buttons_top, render_button_width, button_height, TRUE);
+    MoveWindow(g_state.speed_button, padding + play_button_width + 8, controls_top, speed_button_width, button_height, TRUE);
+    MoveWindow(g_state.actual_size_button, padding + video_width - actual_size_button_width, controls_top, actual_size_button_width, button_height, TRUE);
+    MoveWindow(g_state.details_toggle_button, padding + video_width - actual_size_button_width - details_toggle_button_width - 8, controls_top, details_toggle_button_width, button_height, TRUE);
+    if (g_state.details_visible) {
+        MoveWindow(g_state.details_group, details_left, content_top, details_width, content_height, TRUE);
+        MoveWindow(g_state.info_label, details_inner_left, details_inner_top, details_inner_width, details_text_height, TRUE);
+        MoveWindow(g_state.decode_smoke_button, details_inner_left, details_buttons_top, smoke_button_width, button_height, TRUE);
+        MoveWindow(g_state.render_first_frame_button, details_inner_left + smoke_button_width + 8, details_buttons_top, render_button_width, button_height, TRUE);
+    }
+    ShowWindow(g_state.details_group, g_state.details_visible ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_state.info_label, g_state.details_visible ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_state.decode_smoke_button, g_state.details_visible ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_state.render_first_frame_button, g_state.details_visible ? SW_SHOW : SW_HIDE);
+    update_details_toggle_button();
+    update_speed_button();
     MoveWindow(g_state.status_label, padding, status_top, width - padding * 2, status_height, TRUE);
 }
 
@@ -1613,13 +1717,17 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpenButtonId)), nullptr, nullptr);
         g_state.play_button = CreateWindowW(L"BUTTON", L"Play", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPlayButtonId)), nullptr, nullptr);
+        g_state.speed_button = CreateWindowW(L"BUTTON", L"x2", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeedButtonId)), nullptr, nullptr);
         g_state.actual_size_button = CreateWindowW(L"BUTTON", L"Actual Size", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kActualSizeButtonId)), nullptr, nullptr);
-        g_state.details_group = CreateWindowW(L"BUTTON", L"Details / Diagnostics", WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+        g_state.details_toggle_button = CreateWindowW(L"BUTTON", L"Show Details", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDetailsToggleButtonId)), nullptr, nullptr);
+        g_state.details_group = CreateWindowW(L"BUTTON", L"Details / Diagnostics", WS_CHILD | BS_GROUPBOX,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDetailsGroupId)), nullptr, nullptr);
-        g_state.decode_smoke_button = CreateWindowW(L"BUTTON", L"Decode Test", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
+        g_state.decode_smoke_button = CreateWindowW(L"BUTTON", L"Decode Test", WS_CHILD | WS_DISABLED | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDecodeSmokeButtonId)), nullptr, nullptr);
-        g_state.render_first_frame_button = CreateWindowW(L"BUTTON", L"Render Frame", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
+        g_state.render_first_frame_button = CreateWindowW(L"BUTTON", L"Render Frame", WS_CHILD | WS_DISABLED | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRenderFirstFrameButtonId)), nullptr, nullptr);
         g_state.timeline = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | WS_DISABLED | TBS_NOTICKS,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTimelineId)), nullptr, nullptr);
@@ -1631,7 +1739,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             0, 0, 0, 0, hwnd, nullptr, nullptr, nullptr);
         DragAcceptFiles(hwnd, TRUE);
         DragAcceptFiles(g_state.video_panel, TRUE);
-        g_state.info_label = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        g_state.info_label = CreateWindowW(L"STATIC", L"", WS_CHILD | SS_LEFT,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kInfoLabelId)), nullptr, nullptr);
         g_state.status_label = CreateWindowW(L"STATIC", L"Ready. Open a compatible .dat file to begin.", WS_CHILD | WS_VISIBLE | SS_LEFT,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabelId)), nullptr, nullptr);
@@ -1641,7 +1749,9 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         apply_default_font(g_state.file_path_edit);
         apply_default_font(g_state.open_button);
         apply_default_font(g_state.play_button);
+        apply_default_font(g_state.speed_button);
         apply_default_font(g_state.actual_size_button);
+        apply_default_font(g_state.details_toggle_button);
         apply_default_font(g_state.details_group);
         apply_default_font(g_state.decode_smoke_button);
         apply_default_font(g_state.render_first_frame_button);
@@ -1691,8 +1801,14 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         case kPlayButtonId:
             toggle_playback();
             return 0;
+        case kSpeedButtonId:
+            cycle_playback_speed();
+            return 0;
         case kActualSizeButtonId:
             resize_to_actual_size();
+            return 0;
+        case kDetailsToggleButtonId:
+            toggle_details();
             return 0;
         case kDecodeSmokeButtonId:
             run_decode_smoke_test();
@@ -1832,7 +1948,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             std::wostringstream status;
             status << L"Playing frame " << (g_state.current_frame + 1) << L" / " << frame_count()
                    << L" decoded=" << g_state.frames_decoded
-                   << L" rendered=" << g_state.frames_rendered;
+                   << L" rendered=" << g_state.frames_rendered
+                   << L" Speed: " << playback_speed_label();
             set_status(status.str());
         }
         return 0;
