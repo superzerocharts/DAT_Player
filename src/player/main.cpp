@@ -57,7 +57,7 @@ constexpr UINT_PTR kTimelinePreviewTimerId = 42;
 constexpr UINT_PTR kResizeRefreshTimerId = 43;
 constexpr int kTrackbarMax = 10000;
 constexpr int kDefaultWindowWidth = 660;
-constexpr int kDefaultWindowHeight = 554;
+constexpr int kDefaultWindowHeight = 544;
 constexpr auto kPreviewThrottle = std::chrono::milliseconds(200);
 constexpr auto kDiagnosticsUpdateThrottle = std::chrono::milliseconds(500);
 constexpr auto kResizeRefreshDelay = std::chrono::milliseconds(90);
@@ -383,7 +383,7 @@ int minimum_client_width() {
 }
 
 int minimum_client_height() {
-    return 400;
+    return 390;
 }
 
 SIZE client_size_for_window_size(HWND hwnd, int window_width, int window_height) {
@@ -2617,8 +2617,8 @@ bool resize_to_actual_size() {
     const int timeline_to_button_gap = 2;
     const int button_to_status_gap = 12;
     const int status_bottom_margin = 3;
-    const int file_top = header_height + 12;
-    const int content_top = file_top + file_row_height + 8;
+    const int file_top = header_height + 6;
+    const int content_top = file_top + file_row_height + 4;
 
     int details_width = 0;
     if (g_state.details_visible) {
@@ -2757,8 +2757,8 @@ void layout_controls(HWND hwnd) {
     const int timeline_to_button_gap = 2;
     const int button_to_status_gap = 12;
     const int status_bottom_margin = 3;
-    const int file_top = header_height + 12;
-    const int content_top = file_top + file_row_height + 8;
+    const int file_top = header_height + 6;
+    const int content_top = file_top + file_row_height + 4;
     const int status_top = rect.bottom - status_height - status_bottom_margin;
     const bool force_native_video =
         g_state.force_native_video_size &&
