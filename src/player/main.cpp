@@ -932,7 +932,7 @@ void draw_play_pause_button(const DRAWITEMSTRUCT& item) {
         (g_state.seeking && g_state.pending_seek_resume_after_completion);
     const bool show_pause = g_state.playing || pause_would_cancel_scrub_resume;
     const int content_height = static_cast<int>(content.bottom - content.top);
-    const int icon_height = std::min(14, std::max(8, content_height - 2));
+    const int icon_height = std::min(12, std::max(8, content_height - 4));
     const int icon_width = show_pause ? std::max(12, icon_height) : std::max(12, icon_height - 1);
     RECT icon = {
         content.left + ((content.right - content.left) - icon_width) / 2,
