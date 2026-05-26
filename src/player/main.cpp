@@ -194,7 +194,6 @@ struct PlayerState {
     bool seeking = false;
     bool playing = false;
     bool details_visible = false;
-    bool actual_size_applied = false;
     bool force_native_video_size = false;
     int requested_video_width = 0;
     int requested_video_height = 0;
@@ -387,6 +386,17 @@ int minimum_client_height() {
     return 400;
 }
 
+SIZE client_size_for_window_size(HWND hwnd, int window_width, int window_height) {
+    RECT client_rect = {0, 0, window_width, window_height};
+    const auto style = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE));
+    const auto ex_style = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
+    AdjustWindowRectEx(&client_rect, style, FALSE, ex_style);
+    return {
+        window_width - (client_rect.right - client_rect.left - window_width),
+        window_height - (client_rect.bottom - client_rect.top - window_height)
+    };
+}
+
 SIZE window_size_for_client_size(HWND hwnd, int client_width, int client_height) {
     RECT window_rect = {0, 0, client_width, client_height};
     const auto style = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE));
@@ -412,6 +422,34 @@ int client_width_for_video_width(int video_width, bool details_visible) {
         client_width = preserved_video_width + padding * 3 + details_width;
     }
     return client_width;
+}
+
+SIZE default_window_size_for_details(HWND hwnd, bool details_visible) {
+    constexpr int padding = 14;
+    const SIZE default_client = client_size_for_window_size(hwnd, kDefaultWindowWidth, kDefaultWindowHeight);
+    const int default_video_width = std::max(
+        minimum_video_width_for_controls(),
+        static_cast<int>(default_client.cx) - padding * 2);
+    const int client_width = details_visible
+        ? client_width_for_video_width(default_video_width, true)
+        : default_client.cx;
+    const int client_height = default_client.cy;
+    return window_size_for_client_size(hwnd, client_width, client_height);
+}
+
+bool window_is_default_size(HWND hwnd, bool details_visible) {
+    if (!hwnd) {
+        return false;
+    }
+
+    RECT window_rect = {};
+    GetWindowRect(hwnd, &window_rect);
+    const int width = window_rect.right - window_rect.left;
+    const int height = window_rect.bottom - window_rect.top;
+    const SIZE expected = default_window_size_for_details(hwnd, details_visible);
+    constexpr int tolerance = 4;
+    return std::abs(width - expected.cx) <= tolerance &&
+        std::abs(height - expected.cy) <= tolerance;
 }
 
 double seconds_for_frame(std::uint64_t frame) {
@@ -992,7 +1030,8 @@ void draw_speed_button(const DRAWITEMSTRUCT& item) {
 
 void update_actual_size_button() {
     if (g_state.actual_size_button) {
-        SetWindowTextW(g_state.actual_size_button, g_state.actual_size_applied ? L"Default Size" : L"Actual Size");
+        SetWindowTextW(g_state.actual_size_button,
+            window_is_default_size(g_state.hwnd, g_state.details_visible) ? L"Actual" : L"Default");
     }
 }
 
@@ -1738,7 +1777,6 @@ void reset_loaded_state() {
     g_state.thumb_time_label_rect = {};
     g_state.has_thumb_time_label_rect = false;
     g_state.displayed_thumb_time_text.clear();
-    g_state.actual_size_applied = false;
     update_actual_size_button();
     set_enabled_after_load(false);
     if (g_state.video_panel) {
@@ -1835,7 +1873,6 @@ bool load_dat_path(HWND owner, const std::filesystem::path& path, bool dropped_f
         g_state.thumb_time_label_rect = {};
         g_state.has_thumb_time_label_rect = false;
         g_state.displayed_thumb_time_text.clear();
-        g_state.actual_size_applied = false;
         update_actual_size_button();
         set_enabled_after_load(!g_state.index.frames.empty());
         if (g_state.video_panel) {
@@ -2660,9 +2697,10 @@ bool resize_to_default_size() {
     const int work_width = work.right - work.left;
     const int work_height = work.bottom - work.top;
 
+    const SIZE default_window = default_window_size_for_details(g_state.hwnd, g_state.details_visible);
     const SIZE min_window = window_size_for_client_size(g_state.hwnd, minimum_client_width(), minimum_client_height());
-    const int desired_width = std::min<int>(std::max<int>(kDefaultWindowWidth, min_window.cx), work_width);
-    const int desired_height = std::min<int>(std::max<int>(kDefaultWindowHeight, min_window.cy), work_height);
+    const int desired_width = std::min<int>(std::max<int>(default_window.cx, min_window.cx), work_width);
+    const int desired_height = std::min<int>(std::max<int>(default_window.cy, min_window.cy), work_height);
     const int x = work.left + std::max(0, (work_width - desired_width) / 2);
     const int y = work.top + std::max(0, (work_height - desired_height) / 2);
 
@@ -2673,17 +2711,18 @@ bool resize_to_default_size() {
     g_state.requested_video_width = 0;
     g_state.requested_video_height = 0;
     SetWindowPos(g_state.hwnd, nullptr, x, y, desired_width, desired_height, SWP_NOZORDER | SWP_NOACTIVATE);
+    layout_controls(g_state.hwnd);
     set_status(L"Default Size applied.");
     return true;
 }
 
 void toggle_actual_size() {
-    const bool resized = g_state.actual_size_applied ? resize_to_default_size() : resize_to_actual_size();
+    const bool at_default = window_is_default_size(g_state.hwnd, g_state.details_visible);
+    const bool resized = at_default ? resize_to_actual_size() : resize_to_default_size();
     if (!resized) {
         return;
     }
 
-    g_state.actual_size_applied = !g_state.actual_size_applied;
     update_actual_size_button();
 }
 
@@ -2835,7 +2874,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPlayButtonId)), nullptr, nullptr);
         g_state.speed_button = CreateWindowW(L"BUTTON", L"x2", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeedButtonId)), nullptr, nullptr);
-        g_state.actual_size_button = CreateWindowW(L"BUTTON", L"Actual Size", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
+        g_state.actual_size_button = CreateWindowW(L"BUTTON", L"Actual", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kActualSizeButtonId)), nullptr, nullptr);
         g_state.details_toggle_button = CreateWindowW(L"BUTTON", L"Show Details", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDetailsToggleButtonId)), nullptr, nullptr);
