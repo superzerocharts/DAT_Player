@@ -807,6 +807,7 @@ void update_play_button() {
             (g_state.timeline_dragging && g_state.resume_after_timeline_drag) ||
             (g_state.seeking && g_state.pending_seek_resume_after_completion);
         SetWindowTextW(g_state.play_button, (g_state.playing || pause_would_cancel_scrub_resume) ? L"Pause" : L"Play");
+        InvalidateRect(g_state.play_button, nullptr, TRUE);
     }
 }
 
@@ -853,6 +854,139 @@ void update_speed_button() {
     if (g_state.speed_button) {
         const auto text = next_speed_button_text();
         SetWindowTextW(g_state.speed_button, text.c_str());
+        InvalidateRect(g_state.speed_button, nullptr, TRUE);
+    }
+}
+
+void draw_monochrome_play_icon(HDC hdc, const RECT& rect, COLORREF color) {
+    const int width = rect.right - rect.left;
+    const int height = rect.bottom - rect.top;
+    POINT points[3] = {
+        {rect.left, rect.top},
+        {rect.left, rect.bottom},
+        {rect.left + width, rect.top + height / 2}
+    };
+    HBRUSH brush = CreateSolidBrush(color);
+    HGDIOBJ old_brush = SelectObject(hdc, brush);
+    HGDIOBJ old_pen = SelectObject(hdc, GetStockObject(NULL_PEN));
+    Polygon(hdc, points, 3);
+    SelectObject(hdc, old_pen);
+    SelectObject(hdc, old_brush);
+    DeleteObject(brush);
+}
+
+void draw_monochrome_pause_icon(HDC hdc, const RECT& rect, COLORREF color) {
+    const int width = rect.right - rect.left;
+    const int bar_width = std::max(3, width / 3);
+    const int gap = std::max(3, width / 4);
+    HBRUSH brush = CreateSolidBrush(color);
+    RECT left_bar = {rect.left, rect.top, rect.left + bar_width, rect.bottom};
+    RECT right_bar = {rect.left + bar_width + gap, rect.top, rect.left + bar_width * 2 + gap, rect.bottom};
+    FillRect(hdc, &left_bar, brush);
+    FillRect(hdc, &right_bar, brush);
+    DeleteObject(brush);
+}
+
+void draw_monochrome_fast_forward_icon(HDC hdc, const RECT& rect, COLORREF color) {
+    const int width = static_cast<int>(rect.right - rect.left);
+    const int half_width = std::max(5, width / 2);
+    RECT left_icon = rect;
+    left_icon.right = left_icon.left + half_width;
+    RECT right_icon = rect;
+    right_icon.left = left_icon.right - 1;
+    draw_monochrome_play_icon(hdc, left_icon, color);
+    draw_monochrome_play_icon(hdc, right_icon, color);
+}
+
+void draw_owner_button_frame(const DRAWITEMSTRUCT& item, RECT& content_rect) {
+    RECT rect = item.rcItem;
+    const bool pressed = (item.itemState & ODS_SELECTED) != 0;
+    const bool disabled = (item.itemState & ODS_DISABLED) != 0;
+    UINT state = DFCS_BUTTONPUSH;
+    if (pressed) {
+        state |= DFCS_PUSHED;
+    }
+    if (disabled) {
+        state |= DFCS_INACTIVE;
+    }
+    DrawFrameControl(item.hDC, &rect, DFC_BUTTON, state);
+    content_rect = rect;
+    InflateRect(&content_rect, -6, -4);
+    if (pressed) {
+        OffsetRect(&content_rect, 1, 1);
+    }
+    if (item.itemState & ODS_FOCUS) {
+        RECT focus = item.rcItem;
+        InflateRect(&focus, -4, -4);
+        DrawFocusRect(item.hDC, &focus);
+    }
+}
+
+void draw_play_pause_button(const DRAWITEMSTRUCT& item) {
+    RECT content = {};
+    draw_owner_button_frame(item, content);
+    const bool disabled = (item.itemState & ODS_DISABLED) != 0;
+    const COLORREF color = disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(0, 0, 0);
+    const bool pause_would_cancel_scrub_resume =
+        (g_state.timeline_dragging && g_state.resume_after_timeline_drag) ||
+        (g_state.seeking && g_state.pending_seek_resume_after_completion);
+    const bool show_pause = g_state.playing || pause_would_cancel_scrub_resume;
+    const int content_height = static_cast<int>(content.bottom - content.top);
+    const int icon_height = std::min(14, std::max(8, content_height - 2));
+    const int icon_width = show_pause ? std::max(12, icon_height) : std::max(12, icon_height - 1);
+    RECT icon = {
+        content.left + ((content.right - content.left) - icon_width) / 2,
+        content.top + ((content.bottom - content.top) - icon_height) / 2,
+        content.left + ((content.right - content.left) + icon_width) / 2,
+        content.top + ((content.bottom - content.top) + icon_height) / 2
+    };
+    if (show_pause) {
+        draw_monochrome_pause_icon(item.hDC, icon, color);
+    } else {
+        draw_monochrome_play_icon(item.hDC, icon, color);
+    }
+}
+
+void draw_speed_button(const DRAWITEMSTRUCT& item) {
+    RECT content = {};
+    draw_owner_button_frame(item, content);
+    const bool disabled = (item.itemState & ODS_DISABLED) != 0;
+    const COLORREF color = disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(0, 0, 0);
+    const std::wstring text = next_speed_button_text();
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(g_state.speed_button, WM_GETFONT, 0, 0));
+    HGDIOBJ old_font = font ? SelectObject(item.hDC, font) : nullptr;
+    SetBkMode(item.hDC, TRANSPARENT);
+    SetTextColor(item.hDC, color);
+
+    SIZE text_size = {};
+    GetTextExtentPoint32W(item.hDC, text.c_str(), static_cast<int>(text.size()), &text_size);
+    const bool show_play_icon = text == L"x1";
+    const int content_height = static_cast<int>(content.bottom - content.top);
+    const int icon_height = std::min(12, std::max(8, content_height - 4));
+    const int icon_width = show_play_icon ? 11 : 18;
+    const int gap = 6;
+    const int total_width = icon_width + gap + text_size.cx;
+    int left = content.left + ((content.right - content.left) - total_width) / 2;
+    RECT icon = {
+        left,
+        content.top + ((content.bottom - content.top) - icon_height) / 2,
+        left + icon_width,
+        content.top + ((content.bottom - content.top) + icon_height) / 2
+    };
+    if (show_play_icon) {
+        draw_monochrome_play_icon(item.hDC, icon, color);
+    } else {
+        draw_monochrome_fast_forward_icon(item.hDC, icon, color);
+    }
+    RECT text_rect = {
+        icon.right + gap,
+        content.top,
+        content.right,
+        content.bottom
+    };
+    DrawTextW(item.hDC, text.c_str(), -1, &text_rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    if (old_font) {
+        SelectObject(item.hDC, old_font);
     }
 }
 
@@ -2697,9 +2831,9 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIntegrityDotId)), nullptr, nullptr);
         g_state.open_button = CreateWindowW(L"BUTTON", L"Open .dat", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpenButtonId)), nullptr, nullptr);
-        g_state.play_button = CreateWindowW(L"BUTTON", L"Play", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
+        g_state.play_button = CreateWindowW(L"BUTTON", L"Play", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_OWNERDRAW,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPlayButtonId)), nullptr, nullptr);
-        g_state.speed_button = CreateWindowW(L"BUTTON", L"x2", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        g_state.speed_button = CreateWindowW(L"BUTTON", L"x2", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeedButtonId)), nullptr, nullptr);
         g_state.actual_size_button = CreateWindowW(L"BUTTON", L"Actual Size", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kActualSizeButtonId)), nullptr, nullptr);
@@ -2822,6 +2956,24 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         GetClientRect(hwnd, &rect);
         FillRect(hdc, &rect, g_state.window_background_brush);
         return 1;
+    }
+
+    case WM_DRAWITEM: {
+        const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);
+        if (!item) {
+            return FALSE;
+        }
+        switch (item->CtlID) {
+        case kPlayButtonId:
+            draw_play_pause_button(*item);
+            return TRUE;
+        case kSpeedButtonId:
+            draw_speed_button(*item);
+            return TRUE;
+        default:
+            break;
+        }
+        return FALSE;
     }
 
     case WM_COMMAND:
